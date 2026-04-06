@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+openai
+PyYAML
+Pillow
+numpy
+pypdf
+psycopg[binary]
+rapidocr_onnxruntime
+openpyxl

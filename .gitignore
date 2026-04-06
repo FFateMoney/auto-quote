@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+build/
+config.yaml
+.claudeignore
+runtime/runs/*
+data/*
+standards/*
+standards/企业标准/*
+standards/国家标准/*
+.DS_Store
