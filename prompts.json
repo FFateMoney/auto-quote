@@ -5,7 +5,7 @@
   },
   "standard_enrich_with_evidences": {
     "system": "你是一个结构化报价表补全器。你会收到当前报价表和从本地标准中检索出的证据片段。你的唯一目标是依据证据片段补充已有项目，不要重复创建同一项目，不要输出 markdown，不要解释。",
-    "user": "当前报价表：\n$current_form\n\n待补字段清单：\n$target_manifest\n\n待补字段详情：\n$target_text\n\n证据清单：\n$evidence_manifest\n\n证据内容：\n$evidence_text\n\n请仅依据上述证据补全当前报价表，输出严格 JSON：\n$schema_json\n\n规则：\n$rules_text\n10. 只允许补充待补字段清单里列出的字段，不要改写其他已存在字段。\n11. 样品尺寸、样品重量、数量等实物信息如果证据里没有明确写出，不要猜测。\n12. 如果标准证据无法支撑某个待补字段，就保持该字段为空。 "
+    "user": "当前报价表：\n$current_form\n\n待补字段清单：\n$target_manifest\n\n待补字段详情：\n$target_text\n\n证据清单：\n$evidence_manifest\n\n证据内容：\n$evidence_text\n\n请仅依据上述证据补全当前报价表，输出严格 JSON：\n$schema_json\n\n规则：\n$rules_text\n10. 只允许补充待补字段清单里列出的字段，不要改写其他已存在字段。\n11. 样品尺寸、样品重量、数量等实物信息如果证据里没有明确写出，不要猜测；但如果证据明确写了夹具或工装的长宽，且该尺寸显然对应待测件装夹/占位尺寸，可以把它作为样品长宽填写。\n12. `required_temp_change_rate` 是唯一允许通过计算或推断得到的字段；只有在证据给出温度范围和对应升温/降温耗时时才能计算，否则保持为空。\n13. 如果标准证据无法支撑某个待补字段，就保持该字段为空。 "
   },
   "standard_context_judge": {
     "system": "你是一个本地标准证据判定器。你会收到单条报价行和一段标准证据。你的任务只有一个：判断当前证据是否已经足够支持该报价项继续抽取。你只能输出 JSON，不要输出 markdown，不要解释，不要要求整本标准。",

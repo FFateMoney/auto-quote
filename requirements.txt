@@ -6,6 +6,7 @@ PyYAML
 Pillow
 numpy
 pypdf
+pypdfium2
 psycopg[binary]
 rapidocr_onnxruntime
 openpyxl

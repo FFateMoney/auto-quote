@@ -86,16 +86,17 @@ def _rules_text(*, preserve_row_ids: bool) -> str:
         "1. 只输出 JSON，对象根节点必须是 items 数组。",
         "2. 一个测试项目对应一行，不要把同一项目重复拆成多行。",
         "3. `standard_codes` 必须是字符串数组，没有就给空数组。",
-        "4. `sample_length_mm`、`sample_width_mm`、`sample_height_mm` 分别填写样品长宽高，未知时给 null。",
+        "4. `sample_length_mm`、`sample_width_mm`、`sample_height_mm` 分别填写样品长宽高，未知时给 null；如果文档没有直接写样品长宽，但明确写了夹具或工装的长宽，且该尺寸显然对应待测件装夹/占位尺寸，可将夹具或工装长宽视为样品长宽填写。",
         "5. 数值字段只能填数字或 null，不要带单位。",
         "6. `source_text`、`conditions_text`、`sample_info_text` 使用简洁中文总结来源信息。",
         "7. 遇到无法确定的字段留空字符串、空数组或 null，不要编造。",
         "8. 如果文档写的是确定单值而不是范围，例如温度 80℃、湿度 95%RH、水温 25℃、流量 10L/min、辐照 800W/m2，就把对应的 min/max 两个字段都填成同一个值。",
         "9. 文中的 `[IMAGE_n]` 与图片输入一一对应，图片是文档插图，不是时间序列视频帧。",
         "10. `pricing_quantity` 表示单次执行的计价数量，例如 5 小时；`repeat_count` 表示相同测试需要重复执行的次数/工件数，例如 3 件样品各做一遍就填 3。",
+        "11. `required_temp_change_rate` 是唯一允许通过计算或推断得到的字段：如果文档或标准明确给出温变速率，则直接填写数值部分；如果没有直接给出，但给出了温度范围和对应升温/降温耗时，可以据此计算并填写；如果只有温度范围没有对应耗时，或只有总时长但无法确认对应的是升降温阶段，就不要猜。",
     ]
     if preserve_row_ids:
-        lines.append("11. 如果是在补全已有表格，必须尽量保留已有行的 `row_id`，并在原有行上补字段，不要新增重复行。")
+        lines.append("12. 如果是在补全已有表格，必须尽量保留已有行的 `row_id`，并在原有行上补字段，不要新增重复行。")
     return "\n".join(lines)
 
 

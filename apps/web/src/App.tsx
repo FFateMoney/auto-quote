@@ -26,8 +26,21 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ti
   }
 }
 
-const COLUMN_DEFS: Array<{ key: keyof FormRow | "standard_files"; label: string }> = [
-  { key: "raw_test_type", label: "原始试验类型" },
+type RangeInputKey =
+  | "required_temp_range"
+  | "required_humidity_range"
+  | "required_freq_range"
+  | "required_accel_range"
+  | "required_displacement_range"
+  | "required_irradiance_range"
+  | "required_water_temp_range"
+  | "required_water_flow_range";
+
+type DisplayFieldKey = keyof FormRow | RangeInputKey;
+
+type ColumnDef = { key: DisplayFieldKey; label: string };
+
+const BASE_COLUMN_DEFS: ColumnDef[] = [
   { key: "canonical_test_type", label: "标准试验类型" },
   { key: "standard_codes", label: "标准号" },
   { key: "pricing_mode", label: "计价单位" },
@@ -37,20 +50,44 @@ const COLUMN_DEFS: Array<{ key: keyof FormRow | "standard_files"; label: string 
   { key: "sample_width_mm", label: "样品宽(mm)" },
   { key: "sample_height_mm", label: "样品高(mm)" },
   { key: "sample_weight_kg", label: "样品重量(kg)" },
-  { key: "conditions_text", label: "条件摘要" },
-  { key: "sample_info_text", label: "样品摘要" },
-  { key: "standard_files", label: "标准文件" },
-  { key: "matched_test_type_id", label: "试验类型ID" },
   { key: "selected_equipment_id", label: "选中设备" },
   { key: "candidate_equipment_ids", label: "候选设备" },
   { key: "base_fee", label: "基本金" },
   { key: "unit_price", label: "单价" },
-  { key: "total_price", label: "总价" },
   { key: "formula", label: "公式" },
-  { key: "stage_status", label: "行状态" },
-  { key: "blocking_reason", label: "阻塞原因" },
-  { key: "source_text", label: "来源摘要" },
+  { key: "total_price", label: "总价" },
+  { key: "stage_status", label: "状态" },
 ];
+
+type EditableFieldKey =
+  | "canonical_test_type"
+  | "pricing_quantity"
+  | "repeat_count"
+  | "sample_length_mm"
+  | "sample_width_mm"
+  | "sample_height_mm"
+  | "sample_weight_kg"
+  | "required_temp_change_rate"
+  | RangeInputKey;
+
+const EDITABLE_FIELD_DEFS: Record<EditableFieldKey, { label: string; inputMode: "text" | "decimal" }> = {
+  canonical_test_type: { label: "标准试验类型", inputMode: "text" },
+  pricing_quantity: { label: "计价数量", inputMode: "decimal" },
+  repeat_count: { label: "重复次数", inputMode: "decimal" },
+  sample_length_mm: { label: "样品长(mm)", inputMode: "decimal" },
+  sample_width_mm: { label: "样品宽(mm)", inputMode: "decimal" },
+  sample_height_mm: { label: "样品高(mm)", inputMode: "decimal" },
+  sample_weight_kg: { label: "样品重量(kg)", inputMode: "decimal" },
+  required_temp_range: { label: "温度要求", inputMode: "text" },
+  required_humidity_range: { label: "湿度要求", inputMode: "text" },
+  required_temp_change_rate: { label: "温变速率", inputMode: "decimal" },
+  required_freq_range: { label: "频率要求", inputMode: "text" },
+  required_accel_range: { label: "加速度要求", inputMode: "text" },
+  required_displacement_range: { label: "位移要求", inputMode: "text" },
+  required_irradiance_range: { label: "辐照要求", inputMode: "text" },
+  required_water_temp_range: { label: "水温要求", inputMode: "text" },
+  required_water_flow_range: { label: "水流量要求", inputMode: "text" },
+};
 
 const MANUAL_LABELS: Record<string, string> = {
   canonical_test_type: "标准试验类型",
@@ -79,7 +116,13 @@ const MANUAL_LABELS: Record<string, string> = {
   sample_weight_kg: "样品重量",
 };
 
-const RANGE_INPUT_GROUPS = [
+const RANGE_INPUT_GROUPS: Array<{
+  inputKey: RangeInputKey;
+  minField: keyof FormRow;
+  maxField: keyof FormRow;
+  label: string;
+  placeholder: string;
+}> = [
   {
     inputKey: "required_temp_range",
     minField: "required_temp_min",
@@ -136,48 +179,7 @@ const RANGE_INPUT_GROUPS = [
     label: "水流量要求",
     placeholder: "输入单值如 10，或范围如 8~12",
   },
-] as const;
-
-type ManualFieldSpec = {
-  inputKey: string;
-  label: string;
-  placeholder: string;
-};
-
-function buildManualFieldSpecs(row: FormRow): ManualFieldSpec[] {
-  const missing = new Set(row.missing_fields);
-  const consumed = new Set<string>();
-  const specs: ManualFieldSpec[] = [];
-
-  for (const group of RANGE_INPUT_GROUPS) {
-    const minMissing = missing.has(group.minField);
-    const maxMissing = missing.has(group.maxField);
-    const minValue = row[group.minField as keyof FormRow];
-    const maxValue = row[group.maxField as keyof FormRow];
-    if (minMissing && maxMissing && (minValue == null || minValue === "") && (maxValue == null || maxValue === "")) {
-      specs.push({
-        inputKey: group.inputKey,
-        label: group.label,
-        placeholder: group.placeholder,
-      });
-      consumed.add(group.minField);
-      consumed.add(group.maxField);
-    }
-  }
-
-  for (const fieldName of row.missing_fields) {
-    if (consumed.has(fieldName)) {
-      continue;
-    }
-    specs.push({
-      inputKey: fieldName,
-      label: MANUAL_LABELS[fieldName] ?? fieldName,
-      placeholder: `填写 ${MANUAL_LABELS[fieldName] ?? fieldName}`,
-    });
-  }
-
-  return specs;
-}
+];
 
 const EQUIPMENT_ATTR_LABELS: Record<string, string> = {
   volume_m3: "容积(m3)",
@@ -208,24 +210,17 @@ const EQUIPMENT_ATTR_LABELS: Record<string, string> = {
   water_flow_max: "最大流量",
 };
 
-function formatCell(row: FormRow, key: keyof FormRow | "standard_files"): string {
-  if (key === "standard_files") {
-    return row.source_refs
-      .filter((item) => item.kind === "standard_file")
-      .map((item) => item.label || item.path.split("/").at(-1) || item.path)
-      .join(", ");
-  }
+type RowFieldDrafts = Partial<Record<EditableFieldKey, string>>;
 
-  if (key === "blocking_reason") {
-    const value = row[key];
-    return value == null || value === "" ? "-" : String(value);
-  }
+function isEditableField(key: DisplayFieldKey): key is EditableFieldKey {
+  return key in EDITABLE_FIELD_DEFS;
+}
 
-  if (key === "missing_fields") {
-    return row.missing_fields.map((field) => MANUAL_LABELS[field] ?? field).join("、");
-  }
+function findRangeGroup(key: DisplayFieldKey) {
+  return RANGE_INPUT_GROUPS.find((group) => group.inputKey === key);
+}
 
-  const value = row[key];
+function formatScalarValue(value: unknown): string {
   if (Array.isArray(value)) {
     return value.join(", ");
   }
@@ -235,112 +230,81 @@ function formatCell(row: FormRow, key: keyof FormRow | "standard_files"): string
   return value == null || value === "" ? "-" : String(value);
 }
 
-function ManualEditor({
-  runState,
-  onUpdated,
-}: {
-  runState: RunState;
-  onUpdated: (next: RunState) => void;
-}) {
-  const targetRows = useMemo(
-    () => runState.final_form_items.filter((row) => row.missing_fields.length > 0),
-    [runState],
-  );
-  const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({});
-  const [submittingRowId, setSubmittingRowId] = useState("");
-  const [error, setError] = useState("");
+function formatRangeValue(minValue: unknown, maxValue: unknown): string {
+  const minText = minValue == null || minValue === "" ? "" : String(minValue);
+  const maxText = maxValue == null || maxValue === "" ? "" : String(maxValue);
+  if (!minText && !maxText) {
+    return "-";
+  }
+  if (minText && maxText) {
+    return `${minText}-${maxText}`;
+  }
+  return minText || maxText;
+}
 
-  if (targetRows.length === 0) {
-    return null;
+function formatStatus(row: FormRow): string {
+  return row.total_price != null ? "报价成功" : "报价失败";
+}
+
+function getCommittedFieldValue(row: FormRow, key: EditableFieldKey, savedDrafts: Record<string, RowFieldDrafts>): string {
+  const saved = savedDrafts[row.row_id]?.[key];
+  if (saved != null) {
+    return saved === "" ? "-" : saved;
+  }
+  const rangeGroup = findRangeGroup(key);
+  if (rangeGroup) {
+    return formatRangeValue(row[rangeGroup.minField], row[rangeGroup.maxField]);
+  }
+  return formatScalarValue(row[key]);
+}
+
+function getRawFieldString(row: FormRow, key: EditableFieldKey): string {
+  const rangeGroup = findRangeGroup(key);
+  if (rangeGroup) {
+    const formatted = formatRangeValue(row[rangeGroup.minField], row[rangeGroup.maxField]);
+    return formatted === "-" ? "" : formatted;
+  }
+  const value = row[key];
+  if (value == null) {
+    return "";
+  }
+  return String(value);
+}
+
+function formatCell(row: FormRow, key: DisplayFieldKey, savedDrafts: Record<string, RowFieldDrafts>): string {
+  if (isEditableField(key)) {
+    return getCommittedFieldValue(row, key, savedDrafts);
   }
 
-  async function submitRow(row: FormRow) {
-    const values = drafts[row.row_id] ?? {};
-    const fieldValues = Object.fromEntries(
-      Object.entries(values)
-        .map(([key, value]) => [key, value.trim()])
-        .filter(([, value]) => value !== ""),
-    );
-
-    if (Object.keys(fieldValues).length === 0) {
-      setError("至少填写一个缺失字段后再继续报价。");
-      return;
-    }
-
-    setSubmittingRowId(row.row_id);
-    setError("");
-    try {
-      const response = await fetchWithTimeout(`${API_BASE}/runs/${runState.run_id}/resume`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row_id: row.row_id, field_values: fieldValues }),
-      }, RUN_REQUEST_TIMEOUT_MS);
-      if (!response.ok) {
-        setError(`继续报价失败，请检查 API 服务。HTTP ${response.status}`);
-        return;
-      }
-      const data = (await response.json()) as RunState;
-      setDrafts({});
-      onUpdated(data);
-    } catch (fetchError) {
-      setError(toErrorMessage(fetchError, `无法连接后端接口 ${API_BASE}/runs/${runState.run_id}/resume`));
-    } finally {
-      setSubmittingRowId("");
-    }
+  if (key === "missing_fields") {
+    return row.missing_fields.map((field) => MANUAL_LABELS[field] ?? field).join("、");
   }
 
-  return (
-    <section className="panel">
-      <div className="panel-header">
-        <h3>人工补录</h3>
-        <p>补齐当前缺失信息后，每点击一次都会重新尝试筛选设备并报价；即使当前已有报价，也可以继续补充字段扩大可用设备范围。</p>
-      </div>
-      {error ? <div className="error-banner">{error}</div> : null}
-      <div className="manual-grid">
-        {targetRows.map((row) => {
-          const manualFields = buildManualFieldSpecs(row);
-          return (
-            <article className="manual-card" key={row.row_id}>
-              <div className="manual-card-title">
-                {row.raw_test_type || row.canonical_test_type || row.row_id}
-              </div>
-              <div className="manual-card-subtitle">
-                {row.blocking_reason || "部分设备因字段缺失被筛除，可补充后重新尝试报价"}
-              </div>
-              <div className="manual-fields">
-                {manualFields.map((field) => (
-                  <label className="manual-field" key={field.inputKey}>
-                    <span>{field.label}</span>
-                    <input
-                      value={drafts[row.row_id]?.[field.inputKey] ?? ""}
-                      onChange={(event) =>
-                        setDrafts((current) => ({
-                          ...current,
-                          [row.row_id]: {
-                            ...(current[row.row_id] ?? {}),
-                            [field.inputKey]: event.target.value,
-                          },
-                        }))
-                      }
-                      placeholder={field.placeholder}
-                    />
-                  </label>
-                ))}
-              </div>
-              <button
-                className="primary-button"
-                type="button"
-                disabled={submittingRowId !== "" && submittingRowId === row.row_id}
-                onClick={() => void submitRow(row)}
-              >
-                {submittingRowId !== "" && submittingRowId === row.row_id ? "尝试报价中..." : "尝试报价"}
-              </button>
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
+  if (key === "stage_status") {
+    return formatStatus(row);
+  }
+
+  return formatScalarValue(row[key]);
+}
+
+function shouldShowDynamicField(rows: FormRow[], key: EditableFieldKey): boolean {
+  const rangeGroup = findRangeGroup(key);
+  if (rangeGroup) {
+    return rows.some((row) => {
+      const minValue = row[rangeGroup.minField];
+      const maxValue = row[rangeGroup.maxField];
+      return (
+        (minValue != null && minValue !== "") ||
+        (maxValue != null && maxValue !== "") ||
+        row.missing_fields.includes(String(rangeGroup.minField)) ||
+        row.missing_fields.includes(String(rangeGroup.maxField))
+      );
+    });
+  }
+  return rows.some((row) => {
+    const value = row[key as keyof FormRow];
+    return (value != null && value !== "") || row.missing_fields.includes(String(key));
+  });
 }
 
 function RejectedEquipmentPanel({ activeStage }: { activeStage?: FormStageSnapshot }) {
@@ -443,6 +407,233 @@ function MatchedEquipmentPanel({ activeStage }: { activeStage?: FormStageSnapsho
   );
 }
 
+function StructuredFormPanel({
+  activeStage,
+  runState,
+  onUpdated,
+}: {
+  activeStage?: FormStageSnapshot;
+  runState: RunState;
+  onUpdated: (next: RunState) => void;
+}) {
+  const [savedDrafts, setSavedDrafts] = useState<Record<string, RowFieldDrafts>>({});
+  const [editingValues, setEditingValues] = useState<Record<string, RowFieldDrafts>>({});
+  const [editingFields, setEditingFields] = useState<Record<string, Partial<Record<EditableFieldKey, boolean>>>>({});
+  const [submittingRowId, setSubmittingRowId] = useState("");
+  const [error, setError] = useState("");
+  const rows = activeStage?.items ?? [];
+  const dynamicColumnDefs = useMemo<ColumnDef[]>(
+    () =>
+      [
+        "required_temp_range",
+        "required_humidity_range",
+        "required_temp_change_rate",
+        "required_freq_range",
+        "required_accel_range",
+        "required_displacement_range",
+        "required_irradiance_range",
+        "required_water_temp_range",
+        "required_water_flow_range",
+      ]
+        .filter((key) => shouldShowDynamicField(rows, key))
+        .map((key) => ({ key, label: EDITABLE_FIELD_DEFS[key].label })),
+    [rows],
+  );
+  const columnDefs = useMemo(() => {
+    const staticPrefix = BASE_COLUMN_DEFS.slice(0, 9);
+    const staticSuffix = BASE_COLUMN_DEFS.slice(9);
+    return [...staticPrefix, ...dynamicColumnDefs, ...staticSuffix];
+  }, [dynamicColumnDefs]);
+
+  function setEditingValue(rowId: string, field: EditableFieldKey, value: string) {
+    setEditingValues((current) => ({
+      ...current,
+      [rowId]: {
+        ...(current[rowId] ?? {}),
+        [field]: value,
+      },
+    }));
+  }
+
+  function startEditing(row: FormRow, field: EditableFieldKey) {
+    setEditingValues((current) => ({
+      ...current,
+      [row.row_id]: {
+        ...(current[row.row_id] ?? {}),
+        [field]: current[row.row_id]?.[field] ?? savedDrafts[row.row_id]?.[field] ?? getRawFieldString(row, field),
+      },
+    }));
+    setEditingFields((current) => ({
+      ...current,
+      [row.row_id]: {
+        ...(current[row.row_id] ?? {}),
+        [field]: true,
+      },
+    }));
+  }
+
+  function saveField(row: FormRow, field: EditableFieldKey) {
+    const nextValue = editingValues[row.row_id]?.[field] ?? savedDrafts[row.row_id]?.[field] ?? getRawFieldString(row, field);
+    const originalValue = getRawFieldString(row, field);
+    setSavedDrafts((current) => {
+      const rowDraft = { ...(current[row.row_id] ?? {}) };
+      if (nextValue === originalValue) {
+        delete rowDraft[field];
+      } else {
+        rowDraft[field] = nextValue;
+      }
+      if (Object.keys(rowDraft).length === 0) {
+        const { [row.row_id]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [row.row_id]: rowDraft };
+    });
+    setEditingValues((current) => {
+      const rowDraft = { ...(current[row.row_id] ?? {}) };
+      delete rowDraft[field];
+      if (Object.keys(rowDraft).length === 0) {
+        const { [row.row_id]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [row.row_id]: rowDraft };
+    });
+    setEditingFields((current) => ({
+      ...current,
+      [row.row_id]: {
+        ...(current[row.row_id] ?? {}),
+        [field]: false,
+      },
+    }));
+  }
+
+  async function submitRowChanges(row: FormRow) {
+    const rowDraft = savedDrafts[row.row_id] ?? {};
+    if (Object.keys(rowDraft).length === 0) {
+      setError("请先保存至少一个字段修改后再重新报价。");
+      return;
+    }
+
+    setSubmittingRowId(row.row_id);
+    setError("");
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}/runs/${runState.run_id}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row_id: row.row_id, field_values: rowDraft }),
+      }, RUN_REQUEST_TIMEOUT_MS);
+      if (!response.ok) {
+        setError(`重新报价失败，请检查 API 服务。HTTP ${response.status}`);
+        return;
+      }
+      const data = (await response.json()) as RunState;
+      setSavedDrafts((current) => {
+        const { [row.row_id]: _removed, ...rest } = current;
+        return rest;
+      });
+      setEditingValues((current) => {
+        const { [row.row_id]: _removed, ...rest } = current;
+        return rest;
+      });
+      setEditingFields((current) => {
+        const { [row.row_id]: _removed, ...rest } = current;
+        return rest;
+      });
+      onUpdated(data);
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, `无法连接后端接口 ${API_BASE}/runs/${runState.run_id}/resume`));
+    } finally {
+      setSubmittingRowId("");
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h3>结构化报价表</h3>
+        <p>{activeStage?.label ?? "暂无阶段"} 的完整表格快照；指定字段可人工修正并重新报价。</p>
+      </div>
+      {error ? <div className="error-banner">{error}</div> : null}
+      {activeStage && activeStage.items.length > 0 ? (
+        <div className="structured-form-grid">
+          {activeStage.items.map((row) => (
+            <article key={row.row_id} className={row.missing_fields.length > 0 ? "structured-row-card row-warning" : "structured-row-card"}>
+              <div className="structured-row-header">
+                <div className="structured-row-title">{row.raw_test_type || row.canonical_test_type || row.row_id}</div>
+                <div className="structured-row-meta">row_id: {row.row_id}</div>
+              </div>
+              <div className="structured-fields-grid">
+                {columnDefs.map((column) => (
+                  <section key={`${row.row_id}-${column.key}`} className="structured-field-card">
+                    <div className="structured-field-head">
+                      <div className="structured-field-label">{column.label}</div>
+                      {isEditableField(column.key) ? (
+                        editingFields[row.row_id]?.[column.key] ? (
+                          <button
+                            className="field-action-button save"
+                            type="button"
+                            onClick={() => saveField(row, column.key)}
+                          >
+                            保存
+                          </button>
+                        ) : (
+                          <button
+                            className="field-action-button"
+                            type="button"
+                            onClick={() => startEditing(row, column.key)}
+                          >
+                            编辑
+                          </button>
+                        )
+                      ) : null}
+                    </div>
+                    {isEditableField(column.key) && editingFields[row.row_id]?.[column.key] ? (
+                      <div className="structured-field-editor">
+                        <input
+                          type={EDITABLE_FIELD_DEFS[column.key].inputMode === "decimal" ? "number" : "text"}
+                          step={EDITABLE_FIELD_DEFS[column.key].inputMode === "decimal" ? "any" : undefined}
+                          value={editingValues[row.row_id]?.[column.key] ?? savedDrafts[row.row_id]?.[column.key] ?? getRawFieldString(row, column.key)}
+                          onChange={(event) => setEditingValue(row.row_id, column.key, event.target.value)}
+                          placeholder={EDITABLE_FIELD_DEFS[column.key].label}
+                        />
+                      </div>
+                    ) : (
+                      <div className="structured-field-value" title={formatCell(row, column.key, savedDrafts)}>
+                        {formatCell(row, column.key, savedDrafts)}
+                      </div>
+                    )}
+                    {isEditableField(column.key) && !editingFields[row.row_id]?.[column.key] && savedDrafts[row.row_id]?.[column.key] != null ? (
+                      <div className="structured-field-status">
+                        已保存修改
+                      </div>
+                    ) : null}
+                  </section>
+                ))}
+              </div>
+              {Object.keys(savedDrafts[row.row_id] ?? {}).length > 0 ? (
+                <div className="structured-row-actions">
+                  <div className="structured-row-actions-text">
+                    已保存 {Object.keys(savedDrafts[row.row_id] ?? {}).length} 个字段修改，可直接基于当前人工修正结果重新报价。
+                  </div>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={submittingRowId !== "" && submittingRowId === row.row_id}
+                    onClick={() => void submitRowChanges(row)}
+                  >
+                    {submittingRowId !== "" && submittingRowId === row.row_id ? "重新报价中..." : "按已保存修改重新报价"}
+                  </button>
+                </div>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state-card">还没有可展示的结构化表行。</div>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [files, setFiles] = useState<FileList | null>(null);
   const [runState, setRunState] = useState<RunState | null>(null);
@@ -463,7 +654,7 @@ export default function App() {
   async function submitFiles(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!files || files.length === 0) {
-      setError("请先选择至少一个 Word、Excel 或图片文件。");
+      setError("请先选择至少一个 Word、Excel、PDF 或图片文件。");
       return;
     }
     setSubmitting(true);
@@ -505,7 +696,7 @@ export default function App() {
               <span>上传文档</span>
             <input
               type="file"
-              accept=".docx,.xlsx,.png,.jpg,.jpeg,.bmp,.webp"
+              accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.bmp,.webp"
               multiple
               onChange={(event) => setFiles(event.target.files)}
             />
@@ -576,48 +767,18 @@ export default function App() {
             ) : null}
           </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <h3>结构化报价表</h3>
-              <p>{activeStage?.label ?? "暂无阶段"} 的完整表格快照。</p>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    {COLUMN_DEFS.map((column) => (
-                      <th key={column.key}>{column.label}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeStage && activeStage.items.length > 0 ? (
-                    activeStage.items.map((row) => (
-                      <tr key={row.row_id} className={row.missing_fields.length > 0 ? "row-warning" : ""}>
-                        {COLUMN_DEFS.map((column) => (
-                          <td key={`${row.row_id}-${column.key}`}>{formatCell(row, column.key)}</td>
-                        ))}
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={COLUMN_DEFS.length} className="empty-cell">
-                        还没有可展示的结构化表行。
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
+          <StructuredFormPanel
+            activeStage={activeStage}
+            runState={runState}
+            onUpdated={(next) => {
+              setRunState(next);
+              setActiveStageId(next.current_stage);
+            }}
+          />
 
           <RejectedEquipmentPanel activeStage={activeStage} />
           <MatchedEquipmentPanel activeStage={activeStage} />
 
-          <ManualEditor runState={runState} onUpdated={(next) => {
-            setRunState(next);
-            setActiveStageId(next.current_stage);
-          }} />
         </>
       ) : null}
     </div>

@@ -28,20 +28,19 @@ class StandardLibrary:
         if not self.standards_dir.exists():
             return []
 
-        indexed_docs_by_key = {self._record_key(record): record for record in self.list_indexed_docs() if self._record_key(record)}
         refs: list[SourceRef] = []
         for code in codes:
             standard_key = normalize_standard_key(code)
             if not standard_key:
                 continue
-            record = indexed_docs_by_key.get(standard_key)
+            record = self._find_first_indexed_doc(standard_key)
             if record is not None:
                 refs.append(SourceRef(kind="standard_file", path=str(record.path), label=code))
                 continue
             for path in sorted(self.standards_dir.rglob("*")):
                 if not path.is_file():
                     continue
-                if normalize_standard_key(path.stem) != standard_key:
+                if standard_key not in normalize_standard_key(path.stem):
                     continue
                 refs.append(SourceRef(kind="standard_file", path=str(path), label=code))
                 break
@@ -63,14 +62,22 @@ class StandardLibrary:
 
         matched: list[StandardDocumentRecord] = []
         seen_doc_ids: set[str] = set()
-        for record in self.list_indexed_docs():
-            if record.doc_id in seen_doc_ids:
-                continue
-            if self._record_key(record) not in standard_keys:
+        for standard_key in standard_keys:
+            record = self._find_first_indexed_doc(standard_key)
+            if record is None or record.doc_id in seen_doc_ids:
                 continue
             seen_doc_ids.add(record.doc_id)
             matched.append(record)
         return matched
+
+    def _find_first_indexed_doc(self, standard_key: str) -> StandardDocumentRecord | None:
+        for record in self.list_indexed_docs():
+            record_key = self._record_key(record)
+            if not record_key:
+                continue
+            if standard_key in record_key:
+                return record
+        return None
 
     def _record_key(self, record: StandardDocumentRecord) -> str:
         return (
