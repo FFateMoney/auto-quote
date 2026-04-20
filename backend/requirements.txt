@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+openai
+requests
+PyYAML
+Pillow
+numpy
+pypdf
+pypdfium2
+psycopg[binary]
+rapidocr_onnxruntime
+openpyxl
+paddleocr[doc-parser]

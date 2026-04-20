@@ -1,15 +1,51 @@
+# Python
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.venv/
-node_modules/
+*.egg-info/
 dist/
 build/
-config.yaml
-.claudeignore
-runtime/runs/*
-data/*
-standards/*
-standards/企业标准/*
-standards/国家标准/*
+.pytest_cache/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Node
+frontend/web/node_modules/
+frontend/web/dist/
+frontend/web/.env.local
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
+
+# Environment & Configuration
+backend/dev/config.yaml
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p8
+
+# Data & Runtime (敏感数据不上传)
+runtime/runs/*
+data/
+.cache/
+qdrant_data/
+
+# IDE Files
+.claudeignore
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+

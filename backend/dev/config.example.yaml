@@ -1,0 +1,62 @@
+runtime:
+  run_dir: "runtime/runs"
+
+services:
+  quote_service:
+    host: "127.0.0.1"
+    port: 8000
+    ocr_service_base_url: "http://127.0.0.1:8001"
+    standard_kb_dir: "data/standard_kb"
+
+  ocr_service:
+    host: "127.0.0.1"
+    port: 8001
+    paddle_mode: "python"
+    paddle_server_url: "http://127.0.0.1:8118/v1"
+    paddle_use_doc_parser: true
+    rapidocr_enabled: true
+    pp_structure_device: "gpu:0"
+    pp_structure_text_detection_model_name: "PP-OCRv5_server_det"
+    pp_structure_text_recognition_model_name: "PP-OCRv5_server_rec"
+    pp_structure_use_region_detection: true
+    pp_structure_use_table_recognition: true
+    pp_structure_format_block_content: true
+    pp_structure_markdown_ignore_labels:
+      - "number"
+      - "footnote"
+      - "header"
+      - "header_image"
+      - "footer"
+      - "footer_image"
+      - "aside_text"
+    pp_structure_use_doc_orientation_classify: false
+    pp_structure_use_doc_unwarping: false
+    pp_structure_use_textline_orientation: false
+    pp_structure_use_seal_recognition: false
+    pp_structure_use_formula_recognition: false
+    pp_structure_use_chart_recognition: false
+    pp_structure_use_table_orientation_classify: false
+
+integrations:
+  aiword_script_path: "/my_storage/chen/auto-quote-engine/AIWord/scripts/ai_edit.py"
+  standards_dir: "standards"
+  standard_kb_source_dir: "standards/origin"
+  standard_kb_dir: "data/standard_kb"
+  standard_kb_embedding_provider: "hash_embedding"
+  standard_kb_embedding_model: "default"
+  standard_kb_debug: true
+  standard_retrieval_top_k: 5
+  standard_retrieval_expand_neighbors: true
+  prompts_path: "backend/services/quote_service/resources/prompts.json"
+
+qwen:
+  api_key: ""
+  model: "qwen3-omni-flash"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+database:
+  dbname: "postgres"
+  user: ""
+  password: ""
+  host: ""
+  port: 5432
