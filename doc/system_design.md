@@ -139,12 +139,12 @@ PP-StructureV3 模型（Paddle OCR）
   ↓
 输出至 data/ocr_markdown/{filename}.md
   ↓
-更新 hash 缓存
+更新同步状态
 ```
 
 **关键特性**：
 - **增量同步**：支持 `sync` 和 `rebuild` 两种模式
-- **哈希缓存**：`.cache/file_hashes.json`，记录已处理文件的 SHA-256
+- **同步状态**：`sync_state/sync_state.json`，记录已处理文件的 SHA-256 与下游产物映射
 - **容错机制**：单个文件失败不中断其他文件
 - **报告**：返回 `LibraryBuildReport`（成功数、失败数、耗时）
 
@@ -184,12 +184,12 @@ CleaningService.clean_markdown()
   ↓
 输出至 data/cleaned_markdown/{filename}.md
   ↓
-更新 hash 缓存
+更新同步状态
 ```
 
 **关键特性**：
 - **增量清洗**：同样支持 `sync` 和 `rebuild`
-- **哈希缓存**：`.cache/cleaning_hashes.json`
+- **同步状态**：`sync_state/sync_state.json`
 - **错误隔离**：单文件失败不阻塞其他文件
 - **报告**：返回 `BatchReport`
 
@@ -439,13 +439,12 @@ python -m backend.indexing rebuild
 
 运行时产生的目录可以安全删除：
 - `runtime/runs/` — 存储用户的报价运行记录
-- `data/ocr_markdown/.cache/` — OCR 的 hash 缓存
-- `data/cleaned_markdown/.cache/` — 清洗的 hash 缓存
-- `data/standard_index/.cache/` — 建库的 hash 缓存
 
 重要的持久化数据（保留）：
 - `data/ocr_markdown/*.md` — OCR 输出
 - `data/cleaned_markdown/*.md` — 清洗后的数据
+- `data/ocr_markdown/sync_state/` — OCR 同步状态
+- `data/cleaned_markdown/sync_state/` — 清洗与建库同步状态
 - `data/standard_index/` — Qdrant 向量库
 
 ---

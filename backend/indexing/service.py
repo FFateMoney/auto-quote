@@ -14,7 +14,7 @@ class IndexingService:
         self._store = QdrantStore()
         self._splitter = MarkdownHeadingSplitter()
 
-    def index_file(self, content: str, file_name: str, standard_id: str) -> int:
+    def index_file(self, content: str, file_name: str, standard_id: str, source_key: str) -> int:
         """切片、向量化并入库"""
         import gc
         import torch
@@ -46,14 +46,14 @@ class IndexingService:
         import logging
         logger = logging.getLogger(__name__)
 
-        self._store.delete_by_file(file_name)
+        self._store.delete_by_source_key(source_key)
         batch_sizes = [256, 64, 32, 16, 8]
 
         for batch_size in batch_sizes:
             try:
                 for batch_start in range(0, len(chunks), batch_size):
                     batch_end = min(batch_start + batch_size, len(chunks))
-                    self._store.upsert_chunks(chunks[batch_start:batch_end])
+                    self._store.upsert_chunks(chunks[batch_start:batch_end], source_key=source_key)
                 if batch_size < 256:
                     logger.info("Successfully indexed with batch_size=%d: %s", batch_size, file_name)
                 break  # 成功，退出重试循环
@@ -61,7 +61,7 @@ class IndexingService:
                 # 如果是payload太大的错误且还有更小的batch_size可用，继续尝试
                 if ("Payload error" in str(e) or "payload" in str(e).lower()) and batch_size > batch_sizes[-1]:
                     logger.warning("Payload too large with batch_size=%d, retrying with smaller batch: %s", batch_size, file_name)
-                    self._store.delete_by_file(file_name)
+                    self._store.delete_by_source_key(source_key)
                     continue
                 else:
                     raise

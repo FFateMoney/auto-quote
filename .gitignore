@@ -34,11 +34,14 @@ backend/dev/config.yaml
 *.key
 *.p8
 
-# Data & Runtime (敏感数据不上传)
+# Data & Runtime (生成数据不上传)
 runtime/runs/*
 data/
-.cache/
 qdrant_data/
+
+# ⚠️  重要：sync_state 文件夹保存流水线同步状态
+# 请勿删除 data/*/sync_state/ 中的内容，否则会导致全量重建或重复入库
+# 如果被误删，恢复方法：重新运行 sync 命令会自动重建状态（但会重新处理所有文件）
 
 # IDE Files
 .claudeignore
@@ -48,4 +51,3 @@ qdrant_data/
 .DS_Store
 Thumbs.db
 *.log
-

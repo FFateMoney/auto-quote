@@ -9,6 +9,8 @@ numpy
 pypdf
 pypdfium2
 psycopg[binary]
+beautifulsoup4
+lxml
 rapidocr_onnxruntime
 openpyxl
 paddleocr[doc-parser]

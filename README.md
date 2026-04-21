@@ -88,8 +88,8 @@ pip install -r backend/requirements.txt
 | `ocr.origin_dir` | `OCR_ORIGIN_DIR` | `data/origin` | 原始 PDF 目录 |
 | `ocr.output_dir` | `OCR_OUTPUT_DIR` | `data/ocr_markdown` | OCR 输出 |
 | `cleaning.input_dir` | `CLEANING_INPUT_DIR` | `data/ocr_markdown` | 清洗输入 |
-| `cleaning.output_dir` | `CLEANING_OUTPUT_DIR` | `data/claned_markdown` | 清洗输出 |
-| `indexing.input_dir` | `INDEXING_INPUT_DIR` | `data/claned_markdown` | 索引输入 |
+| `cleaning.output_dir` | `CLEANING_OUTPUT_DIR` | `data/cleaned_markdown` | 清洗输出 |
+| `indexing.input_dir` | `INDEXING_INPUT_DIR` | `data/cleaned_markdown` | 索引输入 |
 | `indexing.qdrant_url` | `QDRANT_URL` | `http://localhost:6333` | Qdrant 服务地址 |
 
 ## 快速开始
@@ -195,7 +195,7 @@ backend/
 data/
   ├── origin/                   ← 原始 PDF 文件（用户放入）
   ├── ocr_markdown/             ← OCR 输出的 Markdown
-  ├── claned_markdown/          ← 清洗后的 Markdown
+  ├── cleaned_markdown/         ← 清洗后的 Markdown
   └── standard_index/           ← Qdrant 向量索引
 runtime/runs/                   ← 报价运行记录（可删除）
 doc/                            ← 文档

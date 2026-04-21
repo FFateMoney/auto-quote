@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import uuid
 from qdrant_client import QdrantClient, models
-from backend.indexing.models import StandardChunk, StandardMetadata
+from backend.indexing.models import StandardChunk
 from backend.indexing.settings import IndexingSettings, get_settings
 
 
@@ -25,14 +24,25 @@ class QdrantStore:
                     distance=models.Distance.COSINE
                 )
             )
-            # 为 standard_id 创建 Payload 索引
-            self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="standard_id",
-                field_schema=models.PayloadSchemaType.KEYWORD
-            )
+        for field_name in ("standard_id", "source_key"):
+            try:
+                self._client.create_payload_index(
+                    collection_name=self._collection_name,
+                    field_name=field_name,
+                    field_schema=models.PayloadSchemaType.KEYWORD
+                )
+            except Exception:
+                pass
 
-    def upsert_chunks(self, chunks: list[StandardChunk]) -> None:
+    def has_points(self) -> bool:
+        collections = self._client.get_collections().collections
+        exists = any(c.name == self._collection_name for c in collections)
+        if not exists:
+            return False
+        result = self._client.count(collection_name=self._collection_name, exact=False)
+        return bool(getattr(result, "count", 0))
+
+    def upsert_chunks(self, chunks: list[StandardChunk], *, source_key: str) -> None:
         points = []
         for chunk in chunks:
             points.append(
@@ -44,6 +54,7 @@ class QdrantStore:
                         "full_context_text": chunk.full_context_text,
                         "standard_id": chunk.metadata.standard_id,
                         "file_name": chunk.metadata.file_name,
+                        "source_key": source_key,
                         "heading_path": chunk.metadata.heading_path,
                         "page_num": chunk.metadata.page_num
                     }
@@ -54,21 +65,25 @@ class QdrantStore:
             points=points
         )
 
-    def delete_by_file(self, file_name: str) -> None:
-        """根据文件名删除索引，用于更新前的清理"""
+    def delete_by_source_key(self, source_key: str) -> None:
+        """根据稳定的源路径删除索引，用于更新前的清理"""
         self._client.delete(
             collection_name=self._collection_name,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
                     must=[
                         models.FieldCondition(
-                            key="file_name",
-                            match=models.MatchValue(value=file_name)
+                            key="source_key",
+                            match=models.MatchValue(value=source_key)
                         )
                     ]
                 )
             )
         )
+
+    def delete_by_file(self, file_name: str) -> None:
+        """兼容旧调用方，根据文件名删除索引。"""
+        self.delete_by_source_key(file_name)
 
     def search(self, vector: list[float], filters: dict | None = None, top_k: int = 5) -> list[models.ScoredPoint]:
         q_filter = None

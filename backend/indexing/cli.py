@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-from backend.indexing.library import IndexingLibrary
 
 
 def _cmd_sync(args: argparse.Namespace) -> None:
     from backend.common.logging import setup_logging
+    from backend.indexing.library import IndexingLibrary
     setup_logging()
     library = IndexingLibrary()
     report = library.sync()
@@ -15,6 +15,7 @@ def _cmd_sync(args: argparse.Namespace) -> None:
 
 def _cmd_rebuild(args: argparse.Namespace) -> None:
     from backend.common.logging import setup_logging
+    from backend.indexing.library import IndexingLibrary
     setup_logging()
     library = IndexingLibrary()
     report = library.rebuild()

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import shutil
 import time
 from pathlib import Path
+
 from backend.cleaning.models import BatchReport
 from backend.cleaning.service import CleaningService
 from backend.cleaning.settings import CleaningSettings, get_settings
+from backend.common.pipeline_state import PipelineStateStore, migrate_cleaning_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -16,15 +17,20 @@ logger = logging.getLogger(__name__)
 class CleaningLibrary:
     """批量清洗管理器：扫描 OCR 产出目录，执行清洗并输出。"""
 
-    _CACHE_SUBDIR = ".cache"
-    _HASHES_FILE = "cleaning_hashes.json"
-
     def __init__(self, settings: CleaningSettings | None = None) -> None:
         self._settings = settings or get_settings()
         self._service = CleaningService(self._settings)
         self._input_dir = self._settings.input_dir
         self._output_dir = self._settings.output_dir
-        self._cache_dir = self._output_dir / self._CACHE_SUBDIR
+        self._state_store = PipelineStateStore(
+            stage="cleaning",
+            input_root=self._input_dir,
+            output_root=self._output_dir,
+            state_root=self._output_dir,
+            legacy_migrator=migrate_cleaning_manifest,
+            legacy_filenames=("cleaning_hashes.json",),
+            log=logger,
+        )
 
     def sync(self) -> BatchReport:
         """增量清洗：跳过哈希值未发生变化的原始文件。"""
@@ -43,9 +49,8 @@ class CleaningLibrary:
             return BatchReport(mode=mode)
 
         if rebuild and self._output_dir.exists():
-            # 保留 .cache 目录，仅删除清洗后的文件
             for item in self._output_dir.iterdir():
-                if item.name == self._CACHE_SUBDIR:
+                if item.name == self._state_store.state_dir.name:
                     continue
                 if item.is_dir():
                     shutil.rmtree(item)
@@ -53,45 +58,47 @@ class CleaningLibrary:
                     item.unlink()
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-        prev_hashes = {} if rebuild else self._read_cache()
-        
-        # 扫描所有 .md 文件
         input_files = sorted(self._input_dir.rglob("*.md"))
         report = BatchReport(mode=mode, total_found=len(input_files))
 
-        next_hashes = {}
-        
-        for path in input_files:
-            rel_path = path.relative_to(self._input_dir)
-            path_key = str(rel_path)
-            current_hash = self._compute_hash(path)
-            next_hashes[path_key] = current_hash
+        with self._state_store.locked():
+            manifest = self._state_store.empty_manifest() if rebuild else self._state_store.load()
+            current_keys = {str(path.relative_to(self._input_dir)) for path in input_files}
 
-            out_path = self._output_dir / rel_path
+            for path_key in sorted(set(manifest.records) - current_keys):
+                record = manifest.records.pop(path_key)
+                for rel_out in record.output_relpaths:
+                    out_path = self._output_dir / rel_out
+                    out_path.unlink(missing_ok=True)
+                    self._prune_empty_parents(out_path.parent)
+                self._state_store.save(manifest)
 
-            # 增量判断：哈希未变且输出文件已存在，则跳过
-            if not rebuild and prev_hashes.get(path_key) == current_hash and out_path.exists():
-                report.skipped += 1
-                continue
+            for path in input_files:
+                rel_path = path.relative_to(self._input_dir)
+                path_key = str(rel_path)
+                current_hash = self._compute_hash(path)
+                out_path = self._output_dir / rel_path
+                record = manifest.records.get(path_key)
 
-            try:
-                logger.info("cleaning | processing: %s", rel_path)
-                result = self._service.clean_file(path)
-                
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text(result.cleaned_content, encoding="utf-8")
-                report.processed += 1
-            except Exception as exc:
-                reason = f"{type(exc).__name__}: {exc}"
-                logger.error("cleaning | failed: %s | reason: %s", rel_path, reason)
-                report.failures.append(f"{rel_path}: {reason}")
-                report.failed += 1
-                # 失败时不记录哈希，下次重试
-                next_hashes.pop(path_key, None)
+                if record is not None and record.source_hash == current_hash and out_path.exists():
+                    report.skipped += 1
+                    continue
 
-        self._write_cache(next_hashes)
+                try:
+                    logger.info("cleaning | processing: %s", rel_path)
+                    result = self._service.clean_file(path)
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_text(result.cleaned_content, encoding="utf-8")
+                    manifest.upsert_record(path_key, source_hash=current_hash, output_relpaths=[path_key], sink_ref=None)
+                    self._state_store.save(manifest)
+                    report.processed += 1
+                except Exception as exc:
+                    reason = f"{type(exc).__name__}: {exc}"
+                    logger.error("cleaning | failed: %s | reason: %s", rel_path, reason)
+                    report.failures.append(f"{rel_path}: {reason}")
+                    report.failed += 1
+
         report.elapsed_ms = (time.perf_counter() - started) * 1000
         return report
 
@@ -102,15 +109,11 @@ class CleaningLibrary:
                 h.update(chunk)
         return h.hexdigest()
 
-    def _read_cache(self) -> dict[str, str]:
-        cache_file = self._cache_dir / self._HASHES_FILE
-        if not cache_file.exists():
-            return {}
-        try:
-            return json.loads(cache_file.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-
-    def _write_cache(self, hashes: dict[str, str]) -> None:
-        cache_file = self._cache_dir / self._HASHES_FILE
-        cache_file.write_text(json.dumps(hashes, indent=2, ensure_ascii=False), encoding="utf-8")
+    def _prune_empty_parents(self, path: Path) -> None:
+        current = path
+        while current != self._output_dir and current.exists():
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent

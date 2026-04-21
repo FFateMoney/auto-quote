@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import re
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -62,24 +61,27 @@ async def create_run(files: list[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="missing_files")
 
+    settings = get_settings()
     run_id = _build_run_id(files[0].filename or "")
+    run_dir = settings.run_dir / run_id
+    uploaded_dir = run_dir / "uploaded"
+    uploaded_dir.mkdir(parents=True, exist_ok=True)
     uploaded_documents: list[UploadedDocument] = []
-    with tempfile.TemporaryDirectory(prefix="auto_quote_upload_") as temp_dir:
-        temp_root = Path(temp_dir)
-        for index, file in enumerate(files, start=1):
-            safe_name = Path(file.filename or f"upload-{index}").name
-            temp_path = temp_root / f"{index:02d}_{safe_name}"
-            temp_path.write_bytes(await file.read())
-            uploaded_documents.append(
-                UploadedDocument(
-                    document_id=f"upload-{index}",
-                    file_name=safe_name,
-                    media_type=file.content_type or "",
-                    stored_path=safe_name,
-                    local_path=str(temp_path),
-                )
+    for index, file in enumerate(files, start=1):
+        safe_name = Path(file.filename or f"upload-{index}").name
+        stored_name = f"{index:02d}_{safe_name}"
+        stored_path = uploaded_dir / stored_name
+        stored_path.write_bytes(await file.read())
+        uploaded_documents.append(
+            UploadedDocument(
+                document_id=f"upload-{index}",
+                file_name=safe_name,
+                media_type=file.content_type or "",
+                stored_path=str(Path("uploaded") / stored_name),
+                local_path=str(stored_path),
             )
-        return get_orchestrator().run(run_id=run_id, uploaded_documents=uploaded_documents).model_dump()
+        )
+    return get_orchestrator().run(run_id=run_id, uploaded_documents=uploaded_documents).model_dump()
 
 
 @router.get("/api/runs/{run_id}")

@@ -60,7 +60,10 @@ class QuoteOrchestrator:
             run_id=run_id,
             overall_status="running",
             uploaded_documents=[d.model_copy(deep=True) for d in uploaded_documents],
-            artifacts=RunArtifacts(run_state_path=str(run_state_path)),
+            artifacts=RunArtifacts(
+                run_state_path=str(run_state_path),
+                uploaded_dir=str(run_dir / "uploaded"),
+            ),
             next_action="系统正在处理文档",
         )
         self._save(run_state_path, state)

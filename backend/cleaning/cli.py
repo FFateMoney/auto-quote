@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-from backend.cleaning.library import CleaningLibrary
-from backend.cleaning.models import BatchReport
 
 
 def _cmd_sync(args: argparse.Namespace) -> None:
     from backend.common.logging import setup_logging
+    from backend.cleaning.library import CleaningLibrary
     setup_logging()
     library = CleaningLibrary()
     report = library.sync()
@@ -16,6 +15,7 @@ def _cmd_sync(args: argparse.Namespace) -> None:
 
 def _cmd_rebuild(args: argparse.Namespace) -> None:
     from backend.common.logging import setup_logging
+    from backend.cleaning.library import CleaningLibrary
     setup_logging()
     library = CleaningLibrary()
     report = library.rebuild()
@@ -37,7 +37,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     uvicorn.run("backend.cleaning.http.app:app", host=host, port=port, reload=False)
 
 
-def _print_report(report: BatchReport) -> None:
+def _print_report(report: object) -> None:
     print(f"[cleaning] mode={report.mode}")
     print(f"[cleaning] total_found={report.total_found} processed={report.processed} skipped={report.skipped} failed={report.failed} elapsed={report.elapsed_ms:.0f}ms")
     for failure in report.failures:

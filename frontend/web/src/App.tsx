@@ -1,6 +1,13 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 
-import type { EquipmentProfile, EquipmentRejection, FormRow, FormStageSnapshot, RunState } from "./types";
+import type {
+  EquipmentProfile,
+  EquipmentRejection,
+  FormRow,
+  FormStageSnapshot,
+  RunState,
+  UploadedDocument,
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -24,6 +31,58 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ti
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+type PreviewKind = "image" | "pdf";
+
+type PreviewDocument = {
+  fileName: string;
+  kind: PreviewKind;
+  url: string;
+};
+
+function getFileExtension(fileName: string): string {
+  const parts = fileName.toLowerCase().split(".");
+  return parts.length > 1 ? parts.at(-1) ?? "" : "";
+}
+
+function isImageDocument(document: UploadedDocument): boolean {
+  if (document.media_type.toLowerCase().startsWith("image/")) {
+    return true;
+  }
+  return ["png", "jpg", "jpeg", "bmp", "webp", "gif"].includes(getFileExtension(document.file_name));
+}
+
+function isPdfDocument(document: UploadedDocument): boolean {
+  return document.media_type.toLowerCase() === "application/pdf" || getFileExtension(document.file_name) === "pdf";
+}
+
+function getDocumentAction(document: UploadedDocument): PreviewKind | "download" {
+  if (isImageDocument(document)) {
+    return "image";
+  }
+  if (isPdfDocument(document)) {
+    return "pdf";
+  }
+  return "download";
+}
+
+function buildArtifactUrl(runId: string, storedPath: string): string {
+  const encodedPath = storedPath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/${encodedPath}`;
+}
+
+function triggerDownload(url: string, fileName: string): void {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 type RangeInputKey =
@@ -683,6 +742,7 @@ export default function App() {
   const [activeStageId, setActiveStageId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [previewDocument, setPreviewDocument] = useState<PreviewDocument | null>(null);
 
   const activeStage: FormStageSnapshot | undefined = useMemo(() => {
     if (!runState) {
@@ -693,6 +753,21 @@ export default function App() {
       runState.form_stages.at(-1)
     );
   }, [activeStageId, runState]);
+
+  useEffect(() => {
+    if (!previewDocument) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPreviewDocument(null);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewDocument]);
 
   async function submitFiles(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -724,6 +799,25 @@ export default function App() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handleUploadedDocumentClick(event: MouseEvent<HTMLAnchorElement>, document: UploadedDocument) {
+    if (!runState) {
+      return;
+    }
+
+    event.preventDefault();
+    const url = buildArtifactUrl(runState.run_id, document.stored_path);
+    const action = getDocumentAction(document);
+    if (action === "download") {
+      triggerDownload(url, document.file_name);
+      return;
+    }
+    setPreviewDocument({
+      fileName: document.file_name,
+      kind: action,
+      url,
+    });
   }
 
   return (
@@ -774,7 +868,18 @@ export default function App() {
               </div>
               <div>
                 <span className="status-label">上传文件</span>
-                <strong>{runState.uploaded_documents.map((item) => item.file_name).join(", ")}</strong>
+                <strong className="uploaded-document-list">
+                  {runState.uploaded_documents.map((item) => (
+                    <a
+                      key={item.document_id}
+                      className="uploaded-document-link"
+                      href={buildArtifactUrl(runState.run_id, item.stored_path)}
+                      onClick={(event) => handleUploadedDocumentClick(event, item)}
+                    >
+                      {item.file_name}
+                    </a>
+                  ))}
+                </strong>
               </div>
             </div>
             {runState.errors.length > 0 ? (
@@ -823,6 +928,31 @@ export default function App() {
           <RejectedEquipmentPanel activeStage={activeStage} runState={runState} />
 
         </>
+      ) : null}
+
+      {previewDocument ? (
+        <div className="preview-overlay" role="presentation" onClick={() => setPreviewDocument(null)}>
+          <div className="preview-dialog" role="dialog" aria-modal="true" aria-label={previewDocument.fileName} onClick={(event) => event.stopPropagation()}>
+            <div className="preview-header">
+              <div className="preview-title">{previewDocument.fileName}</div>
+              <div className="preview-actions">
+                <a className="preview-link-button" href={previewDocument.url} download={previewDocument.fileName}>
+                  下载
+                </a>
+                <button className="preview-close-button" type="button" onClick={() => setPreviewDocument(null)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+            <div className="preview-body">
+              {previewDocument.kind === "image" ? (
+                <img className="preview-image" src={previewDocument.url} alt={previewDocument.fileName} />
+              ) : (
+                <iframe className="preview-frame" src={previewDocument.url} title={previewDocument.fileName} />
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

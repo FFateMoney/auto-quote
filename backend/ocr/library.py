@@ -8,13 +8,13 @@ Supports two modes:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from backend.common.pipeline_state import PipelineStateStore, migrate_ocr_manifest
 from backend.ocr.service import OcrService
 from backend.ocr.settings import OcrSettings, get_settings
 
@@ -37,20 +37,20 @@ class LibraryBuildReport:
 class LibraryBuilder:
     """Scan origin_dir for PDFs, OCR each one, write .md files to output_dir."""
 
-    _CACHE_SUBDIR = ".cache"
-    _HASHES_FILE = "file_hashes.json"
-    _OUTPUTS_FILE = "outputs.json"
-
     def __init__(self, settings: OcrSettings | None = None) -> None:
         s = settings or get_settings()
         self._service = OcrService(s)
         self._origin_dir = s.origin_dir
         self._output_dir = s.output_dir
-        self._cache_dir = self._output_dir / self._CACHE_SUBDIR
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self._state_store = PipelineStateStore(
+            stage="ocr",
+            input_root=self._origin_dir,
+            output_root=self._output_dir,
+            state_root=self._output_dir,
+            legacy_migrator=migrate_ocr_manifest,
+            legacy_filenames=("file_hashes.json", "outputs.json"),
+            log=logger,
+        )
 
     def sync(self) -> LibraryBuildReport:
         """Incremental build — skip PDFs whose SHA-256 hash hasn't changed."""
@@ -62,20 +62,16 @@ class LibraryBuilder:
 
     def status(self) -> dict[str, object]:
         """Return a snapshot of the current library state."""
-        hashes = self._read_json(self._cache_dir / self._HASHES_FILE, {})
-        outputs = self._read_json(self._cache_dir / self._OUTPUTS_FILE, {})
+        with self._state_store.locked():
+            manifest = self._state_store.load()
         origin_pdfs = self._scan_pdfs()
         return {
             "origin_dir": str(self._origin_dir),
             "output_dir": str(self._output_dir),
             "origin_pdf_count": len(origin_pdfs),
-            "processed_count": len(outputs),
+            "processed_count": len(manifest.records),
             "output_dir_exists": self._output_dir.exists(),
         }
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _run(self, *, rebuild: bool) -> LibraryBuildReport:
         mode = "rebuild" if rebuild else "sync"
@@ -88,79 +84,75 @@ class LibraryBuilder:
             shutil.rmtree(self._output_dir)
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
-
-        prev_hashes: dict[str, str] = {} if rebuild else self._read_json(self._cache_dir / self._HASHES_FILE, {})
-        prev_outputs: dict[str, str] = {} if rebuild else self._read_json(self._cache_dir / self._OUTPUTS_FILE, {})
 
         pdf_paths = self._scan_pdfs()
-        report = LibraryBuildReport(mode=mode, total_found=len(pdf_paths))
+        pending = [(path, self._rel_input(path), self._sha256(path), self._rel_output(path)) for path in pdf_paths]
+        report = LibraryBuildReport(mode=mode, total_found=len(pending))
 
-        # Build lookup of what's currently in origin
-        live_keys: set[str] = {str(p) for p in pdf_paths}
+        with self._state_store.locked():
+            manifest = self._state_store.empty_manifest() if rebuild else self._state_store.load()
+            live_keys = {path_key for _, path_key, _, _ in pending}
 
-        # Remove stale outputs for PDFs that no longer exist in origin
-        for path_key, rel_out in list(prev_outputs.items()):
-            if path_key not in live_keys:
-                out_path = self._output_dir / rel_out
-                out_path.unlink(missing_ok=True)
-                self._prune_empty_parents(out_path.parent)
+            for path_key in sorted(set(manifest.records) - live_keys):
+                record = manifest.records.pop(path_key)
+                for rel_out in record.output_relpaths:
+                    out_path = self._output_dir / rel_out
+                    out_path.unlink(missing_ok=True)
+                    self._prune_empty_parents(out_path.parent)
                 report.removed += 1
+                self._state_store.save(manifest)
 
-        # Compute what needs processing
-        pending: list[tuple[Path, str, str, str]] = []
-        for path in pdf_paths:
-            path_key = str(path)
-            file_hash = self._sha256(path)
-            rel_out = self._rel_output(path)
-            pending.append((path, path_key, file_hash, rel_out))
-
-        need_count = sum(1 for _, pk, fh, _ in pending if not (mode == "sync" and prev_hashes.get(pk) == fh))
-        logger.info("library build | mode=%s total=%s need=%s skipped=%s", mode, len(pdf_paths), need_count, len(pdf_paths) - need_count)
-
-        next_hashes: dict[str, str] = {}
-        next_outputs: dict[str, str] = {}
-        done = 0
-
-        for path, path_key, file_hash, rel_out in pending:
-            next_hashes[path_key] = file_hash
-            next_outputs[path_key] = rel_out
-
-            if mode == "sync" and prev_hashes.get(path_key) == file_hash:
-                report.skipped += 1
-                continue
-
-            done += 1
-            logger.info("library build | %s/%s | %s", done, need_count or 1, path.name)
-            try:
-                result = self._service.process_path(path)
-                if not result.markdown_text.strip():
-                    raise RuntimeError("empty_markdown_output")
+            need_count = 0
+            for _, path_key, file_hash, rel_out in pending:
+                record = manifest.records.get(path_key)
                 out_path = self._output_dir / rel_out
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text(result.markdown_text, encoding="utf-8")
-                report.processed += 1
-            except KeyboardInterrupt:
-                logger.warning("library build interrupted | file=%s", path.name)
-                self._save_state(next_hashes, next_outputs)
-                raise
-            except Exception as exc:
-                reason = f"{type(exc).__name__}: {exc}"
-                logger.warning("library build failed | file=%s | reason=%s", path.name, reason)
-                report.failures.append(f"{path.name}: {reason}")
-                report.failed += 1
-                # Don't cache failed files so next sync retries them
-                next_hashes.pop(path_key, None)
-                next_outputs.pop(path_key, None)
-                continue
+                if record is None or record.source_hash != file_hash or not out_path.exists():
+                    need_count += 1
 
-            self._save_state(next_hashes, next_outputs)
+            logger.info(
+                "library build | mode=%s total=%s need=%s skipped=%s",
+                mode,
+                len(pending),
+                need_count,
+                len(pending) - need_count,
+            )
 
-        self._save_state(next_hashes, next_outputs)
+            done = 0
+            for path, path_key, file_hash, rel_out in pending:
+                record = manifest.records.get(path_key)
+                out_path = self._output_dir / rel_out
+                if record is not None and record.source_hash == file_hash and out_path.exists():
+                    report.skipped += 1
+                    continue
+
+                done += 1
+                logger.info("library build | %s/%s | %s", done, need_count or 1, path.name)
+                try:
+                    result = self._service.process_path(path)
+                    if not result.markdown_text.strip():
+                        raise RuntimeError("empty_markdown_output")
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_text(result.markdown_text, encoding="utf-8")
+                    manifest.upsert_record(path_key, source_hash=file_hash, output_relpaths=[rel_out], sink_ref=None)
+                    self._state_store.save(manifest)
+                    report.processed += 1
+                except KeyboardInterrupt:
+                    logger.warning("library build interrupted | file=%s", path.name)
+                    raise
+                except Exception as exc:
+                    reason = f"{type(exc).__name__}: {exc}"
+                    logger.warning("library build failed | file=%s | reason=%s", path.name, reason)
+                    report.failures.append(f"{path.name}: {reason}")
+                    report.failed += 1
+
         report.elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
         logger.info(
             "library build done | processed=%s skipped=%s failed=%s removed=%s elapsed_ms=%s",
-            report.processed, report.skipped, report.failed, report.removed, report.elapsed_ms,
+            report.processed,
+            report.skipped,
+            report.failed,
+            report.removed,
+            report.elapsed_ms,
         )
         return report
 
@@ -168,6 +160,9 @@ class LibraryBuilder:
         if not self._origin_dir.exists():
             return []
         return sorted(p for p in self._origin_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf")
+
+    def _rel_input(self, pdf_path: Path) -> str:
+        return str(pdf_path.relative_to(self._origin_dir))
 
     def _rel_output(self, pdf_path: Path) -> str:
         return str(pdf_path.relative_to(self._origin_dir).with_suffix(".md"))
@@ -187,20 +182,3 @@ class LibraryBuilder:
             except OSError:
                 break
             current = current.parent
-
-    def _save_state(self, hashes: dict[str, str], outputs: dict[str, str]) -> None:
-        self._write_json(self._cache_dir / self._HASHES_FILE, hashes)
-        self._write_json(self._cache_dir / self._OUTPUTS_FILE, outputs)
-
-    def _read_json(self, path: Path, default: dict) -> dict:
-        if not path.exists():
-            return dict(default)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return dict(default)
-        return payload if isinstance(payload, dict) else dict(default)
-
-    def _write_json(self, path: Path, payload: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
