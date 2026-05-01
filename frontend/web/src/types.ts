@@ -1,9 +1,3 @@
-export type SourceRef = {
-  kind: string;
-  path: string;
-  label: string;
-};
-
 export type ManualOverride = {
   field_name: string;
   value: unknown;
@@ -23,6 +17,12 @@ export type EquipmentProfile = {
   attributes: Record<string, unknown>;
 };
 
+export type ExtraStandardRequirement = {
+  requirement_name: string;
+  requirement_text: string;
+  source_section: string;
+};
+
 export type FormRow = {
   row_id: string;
   raw_test_type: string;
@@ -30,6 +30,7 @@ export type FormRow = {
   standard_codes: string[];
   pricing_mode: string;
   pricing_quantity: number | null;
+  sample_count: number | null;
   repeat_count: number | null;
   sample_length_mm: number | null;
   sample_width_mm: number | null;
@@ -52,10 +53,12 @@ export type FormRow = {
   required_water_temp_max: number | null;
   required_water_flow_min: number | null;
   required_water_flow_max: number | null;
+  planned_standard_fields: string[];
+  discovered_standard_fields: string[];
+  extra_standard_requirements: ExtraStandardRequirement[];
   source_text: string;
   conditions_text: string;
   sample_info_text: string;
-  source_refs: SourceRef[];
   stage_status: string;
   missing_fields: string[];
   blocking_reason: string;
@@ -108,4 +111,16 @@ export type RunState = {
   errors: string[];
   created_at: string;
   updated_at: string;
+};
+
+export type TestTypeOption = {
+  id: number;
+  name: string;
+  aliases: string[];
+  pricing_mode: string;
+};
+
+export type TestTypeCatalogResponse = {
+  items: TestTypeOption[];
+  load_error: string;
 };

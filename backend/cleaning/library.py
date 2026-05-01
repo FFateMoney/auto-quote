@@ -74,6 +74,8 @@ class CleaningLibrary:
                     self._prune_empty_parents(out_path.parent)
                 self._state_store.save(manifest)
 
+            self._remove_orphan_outputs(current_keys)
+
             for path in input_files:
                 rel_path = path.relative_to(self._input_dir)
                 path_key = str(rel_path)
@@ -117,3 +119,13 @@ class CleaningLibrary:
             except OSError:
                 break
             current = current.parent
+
+    def _remove_orphan_outputs(self, live_relpaths: set[str]) -> None:
+        for path in self._output_dir.rglob("*.md"):
+            if self._state_store.state_dir in path.parents:
+                continue
+            rel_path = str(path.relative_to(self._output_dir))
+            if rel_path in live_relpaths:
+                continue
+            path.unlink(missing_ok=True)
+            self._prune_empty_parents(path.parent)

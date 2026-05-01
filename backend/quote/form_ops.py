@@ -3,14 +3,20 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.quote.models import FormRow, ManualOverride, SourceRef
+from backend.quote.models import ExtraStandardRequirement, FormRow, ManualOverride
 
 
-LIST_MERGE_FIELDS = {"standard_codes", "candidate_equipment_ids", "missing_fields"}
+LIST_MERGE_FIELDS = {
+    "standard_codes",
+    "candidate_equipment_ids",
+    "missing_fields",
+    "planned_standard_fields",
+    "discovered_standard_fields",
+}
 
 SCALAR_FIELDS = {
     "raw_test_type", "canonical_test_type", "pricing_mode", "pricing_quantity",
-    "repeat_count", "sample_length_mm", "sample_width_mm", "sample_height_mm",
+    "sample_count", "repeat_count", "sample_length_mm", "sample_width_mm", "sample_height_mm",
     "sample_weight_kg", "required_temp_min", "required_temp_max",
     "required_humidity_min", "required_humidity_max", "required_temp_change_rate",
     "required_freq_min", "required_freq_max", "required_accel_min", "required_accel_max",
@@ -24,7 +30,7 @@ SCALAR_FIELDS = {
 }
 
 NUMERIC_FIELDS = {
-    "pricing_quantity", "repeat_count",
+    "pricing_quantity", "sample_count", "repeat_count",
     "sample_length_mm", "sample_width_mm", "sample_height_mm", "sample_weight_kg",
     "required_temp_min", "required_temp_max", "required_humidity_min", "required_humidity_max",
     "required_temp_change_rate", "required_freq_min", "required_freq_max",
@@ -94,11 +100,19 @@ def _merge_row(existing: FormRow, incoming: FormRow) -> FormRow:
             if nxt_s and nxt_s != cur_s:
                 data[field] = f"{cur_s}\n{nxt_s}".strip()
 
-    source_refs = [SourceRef.model_validate(r) for r in data.get("source_refs") or []]
-    for ref in incoming.source_refs:
-        if not any(r.kind == ref.kind and r.path == ref.path for r in source_refs):
-            source_refs.append(ref)
-    data["source_refs"] = [r.model_dump() for r in source_refs]
+    extra_requirements = [
+        ExtraStandardRequirement.model_validate(item)
+        for item in data.get("extra_standard_requirements") or []
+    ]
+    for item in incoming.extra_standard_requirements:
+        if not any(
+            existing.requirement_name == item.requirement_name
+            and existing.requirement_text == item.requirement_text
+            and existing.source_section == item.source_section
+            for existing in extra_requirements
+        ):
+            extra_requirements.append(item)
+    data["extra_standard_requirements"] = [item.model_dump() for item in extra_requirements]
 
     overrides = {k: ManualOverride.model_validate(v) for k, v in (data.get("manual_overrides") or {}).items()}
     overrides.update(incoming.manual_overrides)
@@ -149,10 +163,22 @@ def _normalize_value(field: str, value: Any) -> Any:
 
 
 def _parse_range(value: Any) -> tuple[float | None, float | None]:
-    nums = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", str(value or ""))]
+    text = str(value or "").strip()
+    if "～" in text:
+        left, right = text.split("～", 1)
+        nums = [_parse_number(left), _parse_number(right)]
+        nums = [n for n in nums if n is not None]
+    else:
+        parsed = _parse_number(text)
+        nums = [] if parsed is None else [parsed]
     if not nums:
         return None, None
     if len(nums) == 1:
         return nums[0], nums[0]
     a, b = nums[0], nums[1]
     return (a, b) if a <= b else (b, a)
+
+
+def _parse_number(value: Any) -> float | None:
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value or ""))
+    return float(match.group(0)) if match else None

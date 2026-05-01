@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -47,6 +48,7 @@ CAPABILITY_CONSTRAINTS: tuple[tuple[str, str, str], ...] = (
 )
 
 FIELD_LABELS: dict[str, str] = {
+    "sample_count": "样品件数",
     "repeat_count": "重复次数",
     "sample_length_mm": "长度", "sample_width_mm": "宽度", "sample_height_mm": "高度",
     "sample_weight_kg": "样品重量",
@@ -71,6 +73,18 @@ FIELD_LABELS: dict[str, str] = {
     "water_flow_min": "设备最小流量", "water_flow_max": "设备最大流量",
 }
 
+EQUIPMENT_DIMENSION_LABELS: dict[str, str] = {
+    "sample_length_mm": "设备长度",
+    "sample_width_mm": "设备宽度",
+    "sample_height_mm": "设备高度",
+}
+
+SAMPLE_DIMENSION_LABELS: dict[str, str] = {
+    "sample_length_mm": "样品长度",
+    "sample_width_mm": "样品宽度",
+    "sample_height_mm": "样品高度",
+}
+
 STANDARD_FILLABLE_FIELDS: tuple[str, ...] = (
     "required_temp_min", "required_temp_max",
     "required_humidity_min", "required_humidity_max",
@@ -83,10 +97,51 @@ STANDARD_FILLABLE_FIELDS: tuple[str, ...] = (
     "required_water_flow_min", "required_water_flow_max",
 )
 
+STANDARD_FIELD_EQUIPMENT_ATTRS: dict[str, tuple[str, ...]] = {
+    "required_temp_min": ("temp_min",),
+    "required_temp_max": ("temp_max",),
+    "required_humidity_min": ("humidity_min",),
+    "required_humidity_max": ("humidity_max",),
+    "required_temp_change_rate": ("temp_change_rate_min", "temp_change_rate_max"),
+}
+
+STANDARD_FIELD_CAPABILITY_KEYS: dict[str, tuple[str, ...]] = {
+    "required_freq_min": ("freq_min",),
+    "required_freq_max": ("freq_max",),
+    "required_accel_min": ("accel_min",),
+    "required_accel_max": ("accel_max",),
+    "required_displacement_min": ("displacement_min",),
+    "required_displacement_max": ("displacement_max",),
+    "required_irradiance_min": ("irradiance_min",),
+    "required_irradiance_max": ("irradiance_max",),
+    "required_water_temp_min": ("water_temp_min",),
+    "required_water_temp_max": ("water_temp_max",),
+    "required_water_flow_min": ("water_flow_min",),
+    "required_water_flow_max": ("water_flow_max",),
+}
+
 
 @dataclass(slots=True)
 class Quoter:
     catalog: "CatalogGateway"
+
+    def plan_standard_fields(self, rows: list[FormRow]) -> tuple[list[FormRow], list[str]]:
+        updated, notes = [], []
+        for row in rows:
+            r = row.model_copy(deep=True)
+            template = self._select_standard_template_equipment(r)
+            r.planned_standard_fields = self._supported_standard_fields(template) if template else []
+            label = r.canonical_test_type or r.raw_test_type or r.row_id
+            if template and r.planned_standard_fields:
+                notes.append(
+                    f"{label}: 标准补充模板设备 {template.id}，基础待发现字段 {', '.join(r.planned_standard_fields)}"
+                )
+            elif template:
+                notes.append(f"{label}: 标准补充模板设备 {template.id}，但无可补条件字段")
+            else:
+                notes.append(f"{label}: 未找到可用于标准补充模板的设备")
+            updated.append(r)
+        return updated, notes
 
     def select_equipment(self, rows: list[FormRow]) -> tuple[list[FormRow], list[str]]:
         updated, notes = [], []
@@ -95,6 +150,9 @@ class Quoter:
             candidates = self.catalog.get_equipment_for_test_type(r.canonical_test_type)
             compatible, rejected = self._filter_compatible(r, candidates)
             compatible.sort(key=lambda e: (e.power_kwh is None, e.power_kwh or 0, e.id))
+            preferred_equipment_id = self._preferred_equipment_id(r)
+            if preferred_equipment_id:
+                compatible = self._prioritize_equipment(compatible, preferred_equipment_id)
             r.candidate_equipment_ids = [e.id for e in compatible]
             r.candidate_equipment_profiles = [self._profile(e) for e in compatible]
             r.selected_equipment_id = compatible[0].id if compatible else ""
@@ -140,6 +198,15 @@ class Quoter:
                 updated.append(r)
                 continue
 
+            if r.repeat_count is None:
+                r.stage_status = "waiting_manual_input"
+                r.missing_fields = _merge_fields(supplemental, ["repeat_count"])
+                r.blocking_reason = "缺少重复次数，无法计算报价"
+                overall = "waiting_manual_input"
+                notes.append(f"{r.canonical_test_type or r.raw_test_type}: {r.blocking_reason}")
+                updated.append(r)
+                continue
+
             pricing_rows = self.catalog.get_pricing_rows(r.canonical_test_type)
             selected_row, reason = self._select_pricing_row(r.selected_equipment_id, pricing_rows)
             if not selected_row:
@@ -154,7 +221,7 @@ class Quoter:
             base_fee = float(test_type.base_fee if test_type else r.base_fee or 0)
             unit_price = float(selected_row.price)
             quantity = float(r.pricing_quantity or 0)
-            repeat = float(r.repeat_count or 1)
+            repeat = float(r.repeat_count)
             r.base_fee = base_fee
             r.pricing_mode = _normalize_pricing_mode(test_type.pricing_mode if test_type else r.pricing_mode)
             r.unit_price = unit_price
@@ -171,8 +238,32 @@ class Quoter:
             updated.append(r)
         return updated, notes, overall
 
+    def assign_repeat_counts(self, rows: list[FormRow]) -> tuple[list[FormRow], list[str]]:
+        updated, notes = [], []
+        for row in rows:
+            r = row.model_copy(deep=True)
+            label = r.canonical_test_type or r.raw_test_type or r.row_id
+            manual_repeat_count = self._manual_repeat_count(r)
+            if manual_repeat_count is not None:
+                r.repeat_count = manual_repeat_count
+                notes.append(f"{label}: 保留人工设置的重复次数={manual_repeat_count:g}")
+                updated.append(r)
+                continue
+
+            repeat_count, reason = self._compute_repeat_count(r)
+            r.repeat_count = repeat_count
+            if repeat_count is None:
+                notes.append(f"{label}: 重复次数未计算，原因：{reason}")
+            else:
+                notes.append(f"{label}: 根据最终选中设备计算重复次数={repeat_count:g}")
+            updated.append(r)
+        return updated, notes
+
     def standard_fillable_missing_fields(self, row: FormRow) -> list[str]:
         return [f for f in row.missing_fields if f in STANDARD_FILLABLE_FIELDS]
+
+    def supported_standard_fields(self) -> list[str]:
+        return list(STANDARD_FILLABLE_FIELDS)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -215,26 +306,26 @@ class Quoter:
             if sample_val is None:
                 continue
             if eq_limit in (None, ""):
-                reasons.append(f"{FIELD_LABELS[fname]}/缺失")
-                missing.append(fname)
+                reasons.append(f"{EQUIPMENT_DIMENSION_LABELS[fname]}/缺失")
             elif float(sample_val) > float(eq_limit):
-                reasons.append(f"{FIELD_LABELS[fname]}/>{float(eq_limit):g}")
+                reasons.append(
+                    f"{EQUIPMENT_DIMENSION_LABELS[fname]}/<{SAMPLE_DIMENSION_LABELS[fname]}({_format_number(sample_val)})"
+                )
 
         for row_f, eq_f, direction in DIRECT_EQUIPMENT_CONSTRAINTS:
             r, m = self._compare(getattr(row, row_f), getattr(eq, eq_f), direction,
-                                 FIELD_LABELS.get(row_f, row_f), FIELD_LABELS.get(eq_f, eq_f), row_f)
+                                 _requirement_label(row_f), FIELD_LABELS.get(eq_f, eq_f), row_f)
             if r: reasons.append(r)
             if m: missing.append(m)
 
         if row.required_temp_change_rate is not None:
             tcr_min, tcr_max = eq.temp_change_rate_min, eq.temp_change_rate_max
             if tcr_max in (None, "") and tcr_min in (None, ""):
-                reasons.append(f"{FIELD_LABELS['required_temp_change_rate']}/缺失")
-                missing.append("required_temp_change_rate")
+                reasons.append("设备温变速率/缺失")
             else:
                 for eq_f, direction in (("temp_change_rate_min", "min"), ("temp_change_rate_max", "max")):
                     r, m = self._compare(row.required_temp_change_rate, getattr(eq, eq_f), direction,
-                                         FIELD_LABELS["required_temp_change_rate"], FIELD_LABELS.get(eq_f, eq_f),
+                                         _requirement_label("required_temp_change_rate"), FIELD_LABELS.get(eq_f, eq_f),
                                          "required_temp_change_rate")
                     if r: reasons.append(r)
                     if m: missing.append(m)
@@ -242,7 +333,7 @@ class Quoter:
         caps = eq.capabilities or {}
         for row_f, cap_key, direction in CAPABILITY_CONSTRAINTS:
             r, m = self._compare(getattr(row, row_f), caps.get(cap_key), direction,
-                                 FIELD_LABELS.get(row_f, row_f), FIELD_LABELS.get(cap_key, cap_key), row_f)
+                                 _requirement_label(row_f), FIELD_LABELS.get(cap_key, cap_key), row_f)
             if r: reasons.append(r)
             if m: missing.append(m)
 
@@ -253,13 +344,13 @@ class Quoter:
         if req is None:
             return "", ""
         if limit in (None, ""):
-            return f"{req_label}/缺失", missing_field
+            return f"{lim_label}/缺失", ""
         lf = float(limit)
         rf = float(req)
         if direction == "min" and rf < lf:
-            return f"{req_label}/<{lf:g}", ""
+            return f"{lim_label}/>{req_label}({_format_number(req)})", ""
         if direction == "max" and rf > lf:
-            return f"{req_label}/>{lf:g}", ""
+            return f"{lim_label}/<{req_label}({_format_number(req)})", ""
         return "", ""
 
     def _missing_from_rejections(self, rejected: list[EquipmentRejection]) -> list[str]:
@@ -267,6 +358,104 @@ class Quoter:
         for item in rejected:
             result = _merge_fields(result, item.missing_fields)
         return result
+
+    def _preferred_equipment_id(self, row: FormRow) -> str:
+        override = row.manual_overrides.get("selected_equipment_id") if row.manual_overrides else None
+        value = getattr(override, "value", None) if override is not None else None
+        return str(value or "").strip()
+
+    def _select_standard_template_equipment(self, row: FormRow) -> "EquipmentRecord | None":
+        candidates = self.catalog.get_equipment_for_test_type(row.canonical_test_type)
+        if not candidates:
+            return None
+        ranked = sorted(
+            candidates,
+            key=lambda equipment: (
+                -len(self._supported_standard_fields(equipment)),
+                equipment.power_kwh is None,
+                equipment.power_kwh or 0,
+                equipment.id,
+            ),
+        )
+        return ranked[0] if ranked else None
+
+    def _supported_standard_fields(self, equipment: "EquipmentRecord | None") -> list[str]:
+        if equipment is None:
+            return []
+        return [field for field in STANDARD_FILLABLE_FIELDS if self._equipment_supports_standard_field(equipment, field)]
+
+    def _equipment_supports_standard_field(self, equipment: "EquipmentRecord", field_name: str) -> bool:
+        attr_names = STANDARD_FIELD_EQUIPMENT_ATTRS.get(field_name, ())
+        if any(getattr(equipment, attr_name, None) not in (None, "") for attr_name in attr_names):
+            return True
+        capability_keys = STANDARD_FIELD_CAPABILITY_KEYS.get(field_name, ())
+        capabilities = equipment.capabilities or {}
+        return any(capabilities.get(capability_key) not in (None, "") for capability_key in capability_keys)
+
+    def _prioritize_equipment(
+        self, compatible: list["EquipmentRecord"], preferred_equipment_id: str
+    ) -> list["EquipmentRecord"]:
+        if not preferred_equipment_id:
+            return compatible
+        preferred = next((item for item in compatible if item.id == preferred_equipment_id), None)
+        if preferred is None:
+            return compatible
+        return [preferred, *(item for item in compatible if item.id != preferred_equipment_id)]
+
+    def _manual_repeat_count(self, row: FormRow) -> float | None:
+        override = row.manual_overrides.get("repeat_count") if row.manual_overrides else None
+        value = getattr(override, "value", None) if override is not None else None
+        if value in (None, ""):
+            return None
+        return float(value)
+
+    def _compute_repeat_count(self, row: FormRow) -> tuple[float | None, str]:
+        if not row.selected_equipment_id:
+            return None, "未选中最终设备"
+        if row.sample_count is None:
+            return None, "缺少样品件数"
+        sample_count = float(row.sample_count)
+        if sample_count <= 0:
+            return None, "样品件数必须大于 0"
+        equipment = self.catalog.equipment_by_id.get(row.selected_equipment_id)
+        if not equipment:
+            return None, "未找到最终选中设备信息"
+        if None in (row.sample_length_mm, row.sample_width_mm):
+            return None, "样品长宽不完整，无法计算重复次数"
+        if equipment.length_mm in (None, "") or equipment.width_mm in (None, ""):
+            return None, "最终选中设备长宽未知，无法计算重复次数"
+
+        sample_area_m2 = float(row.sample_length_mm * row.sample_width_mm) / 1_000_000
+        equipment_area_m2 = float(equipment.length_mm * equipment.width_mm) / 1_000_000
+        if sample_area_m2 <= 0:
+            return None, "样品面积必须大于 0"
+        if equipment_area_m2 <= 0:
+            return None, "最终选中设备面积必须大于 0"
+
+        if equipment.height_mm in (None, ""):
+            repeat_count = math.ceil(sample_area_m2 * sample_count / equipment_area_m2)
+            if repeat_count < 1:
+                return None, "最终选中设备面积不足以容纳 1 个样品"
+            return float(repeat_count), ""
+
+        if row.sample_height_mm is None:
+            return None, "样品高度缺失，无法按体积计算重复次数"
+
+        sample_volume_m3 = float(row.sample_length_mm * row.sample_width_mm * row.sample_height_mm) / 1_000_000_000
+        if sample_volume_m3 <= 0:
+            return None, "样品体积必须大于 0"
+
+        equipment_volume_m3 = _effective_volume_m3(equipment)
+        if equipment_volume_m3 is None:
+            return None, "最终选中设备容积未知"
+        if equipment_volume_m3 <= 0:
+            return None, "最终选中设备体积必须大于 0"
+
+        batch_capacity = math.floor(equipment_volume_m3 / sample_volume_m3)
+        if batch_capacity < 1:
+            return None, "最终选中设备容积不足以容纳 1 个样品"
+        repeat_count = math.ceil(sample_count / batch_capacity)
+        return float(repeat_count), ""
 
     def _select_pricing_row(
         self, equipment_id: str, pricing_rows: list["EquipmentPricingRecord"]
@@ -304,6 +493,19 @@ def _merge_fields(current: list[str], incoming: list[str]) -> list[str]:
             seen.add(f)
             result.append(f)
     return result
+
+
+def _format_number(value: object) -> str:
+    return f"{float(value):g}"
+
+
+def _requirement_label(field_name: str) -> str:
+    if field_name == "sample_weight_kg":
+        return "样品重量"
+    label = FIELD_LABELS.get(field_name, field_name)
+    if label.startswith("要求") or label.startswith("样品"):
+        return label
+    return f"要求{label}"
 
 
 def _normalize_pricing_mode(value: object) -> str:

@@ -53,7 +53,7 @@ Auto Quote 采用**微服务单仓库结构**：
 
 ### 3.1 整体流程
 
-用户上传文件 → 文档预处理 → 文档抽取 → 试验类型匹配 → 设备初筛 → 标准补充 → 设备复筛 → 最终报价
+用户上传文件 → 文档预处理 → 文档抽取 → 试验类型匹配 → 设备初筛 → 标准补充（字段发现 + 补值）→ 标准补充后复筛 → 最终报价
 
 ### 3.2 阶段定义
 
@@ -61,11 +61,11 @@ Auto Quote 采用**微服务单仓库结构**：
 
 | 阶段 | 输入 | 处理 | 输出 |
 |------|------|------|------|
-| `document_extracted` | 上传的 Word/Excel/PDF/Image | 使用插件提取表格/文本 | `FormRow` 列表 |
+| `document_extracted` | 上传的 Word/Excel/PDF/Image | 使用插件提取表格/文本，并由 LLM 抽取首版结构化表格 | `FormRow` 列表（此时 `repeat_count` 为空） |
 | `test_type_matched` | 原始试验类型文本 | Qwen LLM 匹配标准试验类型 | `canonical_test_type` + `standard_codes` |
-| `equipment_selected` v1 | 试验条件、样品规格 | 从设备库筛选满足条件的设备 | `candidate_equipment_ids` |
-| `standard_enriched` | 缺失字段 + 标准文本 | 多轮 LLM 从标准中提取缺失值 | 补充后的缺失字段 |
-| `equipment_selected` v2 | 补充后的试验条件 | 再次筛选设备 | `selected_equipment_id` |
+| `equipment_selected_initial` | 试验条件、样品规格 | 从设备库筛选满足条件的设备，并生成标准补充模板字段 | `candidate_equipment_ids` + `planned_standard_fields` |
+| `standard_enriched` | 标准号 + 模板字段 + 标准文本 | 先做字段发现，再对系统支持字段补值，并记录额外标准要求 | `discovered_standard_fields` + `extra_standard_requirements` |
+| `equipment_selected_enriched` | 补充后的试验条件 | 再次筛选设备，并基于最终选中设备计算 `repeat_count` | `selected_equipment_id` + `repeat_count` |
 | `final_quoted` | 选中的设备 + 报价规则 | 计算报价 | `base_fee` + `unit_price` + `total_price` |
 
 ### 3.3 核心数据结构：FormRow
@@ -91,7 +91,8 @@ Auto Quote 采用**微服务单仓库结构**：
 **报价相关字段**：
 - `pricing_mode`：计价方式（如”小时数”、”件数”）
 - `pricing_quantity`：单次计价量（如 5 小时）
-- `repeat_count`：重复次数（如 3 件）
+- `sample_count`：本次测试的总件数/总样品数
+- `repeat_count`：重复次数，系统会基于容积和件数给出默认建议值，但允许人工覆盖
 - 公式：`总价 = (基础费 + 单价 × 计价数量) × 重复次数`
 
 **结果字段**：
@@ -100,6 +101,9 @@ Auto Quote 采用**微服务单仓库结构**：
 - `rejected_equipment`：被筛设备及原因
 - `missing_fields`：未补齐的字段列表（中文标签）
 - `blocking_reason`：阻塞原因
+- `planned_standard_fields`：按模板设备生成的基础待发现字段
+- `discovered_standard_fields`：标准中实际涉及、且系统支持的字段
+- `extra_standard_requirements`：标准中额外要求（名称 + 内容 + 来源）
 - `standard_evidences`：从标准中提取的文本证据
 - `standard_match_notes`：标准匹配笔记
 
@@ -500,7 +504,8 @@ required_water_flow_max: float | None
 ```python
 pricing_mode: str | None             # 计价方式（”小时数”、”件数”、”天数” 等）
 pricing_quantity: float | None       # 单次计价量（如 5 小时）
-repeat_count: int | None             # 重复次数（如 3 件）
+sample_count: float | None           # 总件数/总样品数（如 10 件）
+repeat_count: int | None             # 重复次数，系统默认按批次数粗算，也允许人工覆盖
 base_fee: float | None               # 基础费（元）
 unit_price: float | None             # 单价（元/单位）
 total_price: float | None            # 总价（元）
@@ -526,8 +531,9 @@ standard_match_notes: str | None     # 标准匹配说明
 
 其中：
 - `pricing_quantity`：单次执行的计价量（如 `5 小时`）
-- `repeat_count`：同一试验的重复次数或样品数（如 `3 件`）
-- 若 `repeat_count` 为空，默认按 `1` 处理
+- `sample_count`：本次测试的总件数/总样品数
+- `repeat_count`：系统默认先按“单批容量”和总件数粗算批次数；若人工改过，则以人工值为准
+- 若 `sample_count`、样品长宽高或最终设备容积不完整，则无法给出默认 `repeat_count`
 
 ### 11.3 标准补充对应字段
 

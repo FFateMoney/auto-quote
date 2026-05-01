@@ -6,12 +6,14 @@ from backend.indexing.engine import Qwen3EmbeddingEngine
 from backend.indexing.qdrant_store import QdrantStore
 from backend.indexing.splitter import MarkdownHeadingSplitter
 from backend.indexing.models import StandardChunk, SearchQuery, SearchResult, StandardMetadata
+from backend.indexing.settings import IndexingSettings, get_settings
 
 
 class IndexingService:
-    def __init__(self, engine: Qwen3EmbeddingEngine | None = None) -> None:
+    def __init__(self, engine: Qwen3EmbeddingEngine | None = None, settings: IndexingSettings | None = None) -> None:
         self._engine = engine # 延迟加载或外部注入
-        self._store = QdrantStore()
+        self._settings = settings or get_settings()
+        self._store = QdrantStore(self._settings)
         self._splitter = MarkdownHeadingSplitter()
 
     def index_file(self, content: str, file_name: str, standard_id: str, source_key: str) -> int:
@@ -70,27 +72,29 @@ class IndexingService:
 
     def search(self, query: SearchQuery) -> list[SearchResult]:
         """执行混合检索：规范化过滤 + 向量召回 + Reranker 精排"""
-        
+
         # 1. 过滤器规范化
         processed_filters = {}
+        resolved_standard_ids: list[str] | None = None
         if query.filters:
             for k, v in query.filters.items():
                 if k == "standard_id" and v:
-                    processed_filters[k] = re.sub(r'[^a-z0-9]', '', str(v).lower())
+                    normalized = self._normalize_standard_id(str(v))
+                    resolved_standard_ids = self._resolve_standard_ids(normalized)
+                    if not resolved_standard_ids:
+                        return []
+                    if len(resolved_standard_ids) == 1:
+                        processed_filters[k] = resolved_standard_ids[0]
                 else:
                     processed_filters[k] = v
 
         # 2. 向量化 Query
         instructed_query = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{query.query}"
         query_vector = self._engine.embed_texts([instructed_query])[0]
-        
+
         # 3. 粗排召回 (召回更多数量以便精排)
         top_n = max(20, query.top_k * 3)
-        points = self._store.search(
-            vector=query_vector,
-            filters=processed_filters,
-            top_k=top_n
-        )
+        points = self._search_points(query_vector, processed_filters, resolved_standard_ids, top_n)
         
         if not points:
             return []
@@ -120,3 +124,63 @@ class IndexingService:
     def reset_all(self) -> None:
         self._store.delete_collection()
         self._store.ensure_collection()
+
+    def _search_points(
+        self,
+        query_vector: list[float],
+        processed_filters: dict,
+        resolved_standard_ids: list[str] | None,
+        top_n: int,
+    ) -> list:
+        if not resolved_standard_ids or len(resolved_standard_ids) == 1:
+            return self._store.search(
+                vector=query_vector,
+                filters=processed_filters,
+                top_k=top_n,
+            )
+
+        merged = {}
+        for standard_id in resolved_standard_ids:
+            current_filters = dict(processed_filters)
+            current_filters["standard_id"] = standard_id
+            for point in self._store.search(vector=query_vector, filters=current_filters, top_k=top_n):
+                point_key = str(getattr(point, "id", ""))
+                existing = merged.get(point_key)
+                if existing is None or getattr(point, "score", 0.0) > getattr(existing, "score", 0.0):
+                    merged[point_key] = point
+        return list(merged.values())
+
+    def _resolve_standard_ids(self, normalized_query: str) -> list[str]:
+        if not normalized_query:
+            return []
+
+        local_standard_ids = self._list_local_standard_ids()
+        if not local_standard_ids:
+            # 没有本地目录可参考时，保留原先的 exact 过滤行为。
+            return [normalized_query]
+
+        if normalized_query in local_standard_ids:
+            return [normalized_query]
+
+        user_in_local = sorted(standard_id for standard_id in local_standard_ids if normalized_query in standard_id)
+        if user_in_local:
+            return user_in_local
+
+        local_in_user = sorted(standard_id for standard_id in local_standard_ids if standard_id in normalized_query)
+        if local_in_user:
+            return local_in_user
+
+        return []
+
+    def _list_local_standard_ids(self) -> set[str]:
+        input_dir = self._settings.input_dir
+        if not input_dir.exists():
+            return set()
+        return {
+            self._normalize_standard_id(path.stem)
+            for path in input_dir.rglob("*.md")
+            if self._normalize_standard_id(path.stem)
+        }
+
+    def _normalize_standard_id(self, value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(value).lower())

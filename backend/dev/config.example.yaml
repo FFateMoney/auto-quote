@@ -6,7 +6,6 @@ services:
     host: "127.0.0.1"
     port: 8000
     ocr_service_base_url: "http://127.0.0.1:8001"
-    standard_kb_dir: "data/standard_kb"
 
   ocr_service:
     host: "127.0.0.1"
@@ -41,7 +40,6 @@ integrations:
   aiword_script_path: "/my_storage/chen/auto-quote-engine/AIWord/scripts/ai_edit.py"
   standards_dir: "standards"
   standard_kb_source_dir: "standards/origin"
-  standard_kb_dir: "data/standard_kb"
   standard_kb_embedding_provider: "hash_embedding"
   standard_kb_embedding_model: "default"
   standard_kb_debug: true

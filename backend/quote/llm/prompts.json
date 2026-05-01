@@ -7,6 +7,10 @@
     "system": "你是一个结构化报价表补全器。你会收到当前报价表和从本地标准中检索出的证据片段。你的唯一目标是依据证据片段补充已有项目，不要重复创建同一项目，不要输出 markdown，不要解释。",
     "user": "当前报价表：\n$current_form\n\n待补字段清单：\n$target_manifest\n\n待补字段详情：\n$target_text\n\n证据清单：\n$evidence_manifest\n\n证据内容：\n$evidence_text\n\n请仅依据上述证据补全当前报价表，输出严格 JSON：\n$schema_json\n\n规则：\n$rules_text\n10. 只允许补充待补字段清单里列出的字段，不要改写其他已存在字段。\n11. 样品尺寸、样品重量、数量等实物信息如果证据里没有明确写出，不要猜测；但如果证据明确写了夹具或工装的长宽，且该尺寸显然对应待测件装夹/占位尺寸，可以把它作为样品长宽填写。\n12. `required_temp_change_rate` 是唯一允许通过计算或推断得到的字段；只有在证据给出温度范围和对应升温/降温耗时时才能计算，否则保持为空。\n13. 如果标准证据无法支撑某个待补字段，就保持该字段为空。 "
   },
+  "standard_field_discovery": {
+    "system": "你是一个结构化标准字段发现器。你会收到当前报价表和标准证据，任务是判断标准里实际涉及哪些系统已支持字段，并记录 schema 之外但需要保留展示的额外要求。只能输出 JSON，不要输出 markdown，不要解释。",
+    "user": "当前报价表：\n$current_form\n\n基础待发现字段清单：\n$target_manifest\n\n基础待发现字段详情：\n$target_text\n\n系统已支持字段全集：\n$supported_fields_text\n\n证据清单：\n$evidence_manifest\n\n证据内容：\n$evidence_text\n\n请输出严格 JSON：\n$schema_json\n\n规则：\n1. `discovered_standard_fields` 只能填写系统已支持字段全集中的字段名。\n2. 如果标准明确涉及某个系统已支持字段，即使它不在基础待发现字段中，也可以加入 `discovered_standard_fields`。\n3. `extra_standard_requirements` 只记录当前 schema 不支持、但标准明确提出的额外要求。\n4. 每个额外要求必须尽量填写 `requirement_name`、`requirement_text`、`source_section`；`source_section` 优先使用证据中的章节号。\n5. 不要把已经是系统支持字段的内容重复写进 `extra_standard_requirements`。\n6. 无法确认就不要猜测；字段发现和额外要求都可以返回空数组。"
+  },
   "standard_context_judge": {
     "system": "你是一个本地标准证据判定器。你会收到单条报价行和一段标准证据。你的任务只有一个：判断当前证据是否已经足够支持该报价项继续抽取。你只能输出 JSON，不要输出 markdown，不要解释，不要要求整本标准。",
     "user": "当前报价行：\n$current_row\n\n本轮目标字段：\n$target_fields\n\n当前标准证据：\n$evidence_text\n\n请严格输出 JSON，格式如下：\n{\n  \"decision\": \"sufficient | need_parent | not_standard_match\",\n  \"reason\": \"简短原因\",\n  \"missing\": [\"缺失项，可为空数组\"]\n}\n\n规则：\n1. 只有当当前证据已经足够支撑本轮目标字段时，才能返回 `sufficient`。\n2. 只要本轮目标字段里仍有任何字段无法从当前证据确认，就返回 `need_parent`，表示需要上一级章节范围的更多上下文，例如 `5.1.*` 或 `5.*`。\n3. 如果当前证据看起来不是该报价项对应的标准试验，返回 `not_standard_match`。\n4. 不允许请求整本标准，不允许请求任意更多内容；`need_parent` 只表示进入上一级章节范围。\n5. `reason` 必须简短明确，`missing` 应尽量列出当前仍无法确认的目标字段。"

@@ -272,6 +272,14 @@ a {
   align-items: start;
 }
 
+.structured-field-head-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .structured-field-label {
   font-size: 0.82rem;
   font-weight: 700;
@@ -405,6 +413,29 @@ td {
   margin-bottom: 10px;
 }
 
+.equipment-name-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.equipment-select-button {
+  white-space: nowrap;
+}
+
+.equipment-selected-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: #e7f3ec;
+  color: #2d6f4d;
+  border: 1px solid rgba(45, 111, 77, 0.18);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .rejection-table {
   min-width: 820px;
 }
@@ -442,6 +473,72 @@ td {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.picker-dialog {
+  width: min(760px, 100%);
+  max-height: min(80vh, 820px);
+  background: #fffdf9;
+  border-radius: 24px;
+  box-shadow: 0 24px 64px rgba(20, 27, 38, 0.28);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-subtitle {
+  color: #6d7682;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.picker-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  background: #f7f3ec;
+}
+
+.picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.picker-option {
+  border: 1px solid rgba(121, 102, 83, 0.14);
+  background: #fffdf9;
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.picker-option:hover {
+  border-color: rgba(121, 102, 83, 0.28);
+  background: #fffaf3;
+}
+
+.picker-option-selected {
+  border-color: rgba(45, 111, 77, 0.24);
+  background: #eef7f1;
+}
+
+.picker-option-name {
+  color: #2f3944;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.picker-option-meta {
+  color: #6d7682;
+  font-size: 0.84rem;
+  line-height: 1.5;
 }
 
 .preview-header {
@@ -556,6 +653,10 @@ td {
 
   .preview-dialog {
     height: min(88vh, 100%);
+  }
+
+  .picker-dialog {
+    max-height: min(88vh, 100%);
   }
 
   .preview-header {

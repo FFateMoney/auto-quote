@@ -56,6 +56,24 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/api/catalog/test-types")
+def list_test_types() -> dict[str, object]:
+    orchestrator = get_orchestrator()
+    items = [
+        {
+            "id": record.id,
+            "name": record.name,
+            "aliases": list(record.aliases),
+            "pricing_mode": record.pricing_mode,
+        }
+        for record in orchestrator.catalog.test_types
+    ]
+    return {
+        "items": items,
+        "load_error": orchestrator.catalog.load_error,
+    }
+
+
 @router.post("/api/runs")
 async def create_run(files: list[UploadFile] = File(...)):
     if not files:

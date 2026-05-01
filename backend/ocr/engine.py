@@ -52,6 +52,7 @@ class PpStructureV3Engine:
                 use_chart_recognition=s.use_chart_recognition,
                 use_region_detection=s.use_region_detection,
                 use_table_orientation_classify=s.use_table_orientation_classify,
+                use_ocr_results_with_table_cells=False,
                 format_block_content=s.format_block_content,
                 markdown_ignore_labels=s.markdown_ignore_labels,
             )

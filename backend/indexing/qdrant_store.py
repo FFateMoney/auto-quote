@@ -99,14 +99,15 @@ class QdrantStore:
                     )
             if must_conditions:
                 q_filter = models.Filter(must=must_conditions)
-        
-        return self._client.search(
+
+        result = self._client.query_points(
             collection_name=self._collection_name,
-            query_vector=vector,
+            query=vector,
             query_filter=q_filter,
             limit=top_k,
             with_payload=True
         )
+        return list(result.points)
 
     def delete_collection(self) -> None:
         self._client.delete_collection(self._collection_name)

@@ -4,18 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from backend.quote.models import FormRow, SourceRef
+from backend.quote.models import FormRow
 
 if TYPE_CHECKING:
     from backend.quote.catalog import CatalogGateway
-    from backend.quote.standard.kb_reader import StandardLibrary
     from backend.quote.standard.module import StandardRetrievalModule
 
 
 @dataclass(slots=True)
 class Kernel:
     catalog: "CatalogGateway"
-    standards: "StandardLibrary"
     retrieval: "StandardRetrievalModule"
 
     def match_test_types(self, rows: list[FormRow]) -> tuple[list[FormRow], list[str]]:
@@ -36,19 +34,6 @@ class Kernel:
             updated.append(r)
         if self.catalog.load_error:
             notes.append(f"数据库目录加载失败：{self.catalog.load_error}")
-        return updated, notes
-
-    def attach_standard_refs(self, rows: list[FormRow]) -> tuple[list[FormRow], list[str]]:
-        updated, notes = [], []
-        for row in rows:
-            r = row.model_copy(deep=True)
-            refs = self.standards.find_by_codes(r.standard_codes)
-            for ref in refs:
-                if not any(x.kind == ref.kind and x.path == ref.path for x in r.source_refs):
-                    r.source_refs.append(SourceRef.model_validate(ref))
-            if refs:
-                notes.append(f"{r.raw_test_type or r.row_id}: 已找到标准文件 {'、'.join(ref.label or ref.path for ref in refs)}")
-            updated.append(r)
         return updated, notes
 
     def resolve_standard_evidences(

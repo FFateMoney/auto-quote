@@ -17,16 +17,6 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-# ---------------------------------------------------------------------------
-# Shared primitives used inside this service
-# ---------------------------------------------------------------------------
-
-class SourceRef(BaseModel):
-    kind: str
-    path: str
-    label: str = ""
-
-
 class ManualOverride(BaseModel):
     field_name: str
     value: Any
@@ -77,6 +67,12 @@ class StandardResolutionResult(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ExtraStandardRequirement(BaseModel):
+    requirement_name: str = ""
+    requirement_text: str = ""
+    source_section: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Core form row
 # ---------------------------------------------------------------------------
@@ -88,6 +84,7 @@ class FormRow(BaseModel):
     standard_codes: list[str] = Field(default_factory=list)
     pricing_mode: str = ""
     pricing_quantity: float | None = None
+    sample_count: float | None = None
     repeat_count: float | None = None
     sample_length_mm: float | None = None
     sample_width_mm: float | None = None
@@ -110,11 +107,13 @@ class FormRow(BaseModel):
     required_water_temp_max: float | None = None
     required_water_flow_min: float | None = None
     required_water_flow_max: float | None = None
+    planned_standard_fields: list[str] = Field(default_factory=list)
+    discovered_standard_fields: list[str] = Field(default_factory=list)
+    extra_standard_requirements: list[ExtraStandardRequirement] = Field(default_factory=list)
     source_text: str = ""
     conditions_text: str = ""
     sample_info_text: str = ""
 
-    source_refs: list[SourceRef] = Field(default_factory=list)
     stage_status: str = ""
     missing_fields: list[str] = Field(default_factory=list)
     blocking_reason: str = ""
@@ -151,11 +150,21 @@ class FormRow(BaseModel):
             standard_codes=["GB/T 2423.1"],
             pricing_mode="小时",
             pricing_quantity=24,
-            repeat_count=1,
+            sample_count=10,
+            repeat_count=None,
             sample_length_mm=100,
             sample_width_mm=80,
             sample_height_mm=50,
             required_temp_max=85,
+            planned_standard_fields=["required_temp_max"],
+            discovered_standard_fields=["required_temp_max"],
+            extra_standard_requirements=[
+                ExtraStandardRequirement(
+                    requirement_name="通电状态",
+                    requirement_text="试验期间样品应保持通电运行",
+                    source_section="5.1.3",
+                )
+            ],
             source_text="样品进行高温 85C 24h 试验",
             conditions_text="85C 24h",
             sample_info_text="样品尺寸 100x80x50mm",

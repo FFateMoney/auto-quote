@@ -11,18 +11,111 @@ from openai import OpenAI
 
 from backend.common.logging import append_run_log
 from backend.common.models import NormalizedDocument
-from backend.quote.models import FormRow, StandardContextDecision, StandardEvidence
+from backend.quote.models import ExtraStandardRequirement, FormRow, StandardContextDecision, StandardEvidence
 from backend.quote.settings import get_settings
 
 
-MODEL_FIELDS: tuple[str, ...] = (
+DOCUMENT_EXTRACT_VISIBLE_FIELDS: tuple[str, ...] = (
+    "raw_test_type",
+    "canonical_test_type",
+    "standard_codes",
+    "pricing_mode",
+    "pricing_quantity",
+    "sample_count",
+    "sample_length_mm",
+    "sample_width_mm",
+    "sample_height_mm",
+    "sample_weight_kg",
+    "required_temp_min",
+    "required_temp_max",
+    "required_humidity_min",
+    "required_humidity_max",
+    "required_temp_change_rate",
+    "required_freq_min",
+    "required_freq_max",
+    "required_accel_min",
+    "required_accel_max",
+    "required_displacement_min",
+    "required_displacement_max",
+    "required_irradiance_min",
+    "required_irradiance_max",
+    "required_water_temp_min",
+    "required_water_temp_max",
+    "required_water_flow_min",
+    "required_water_flow_max",
+    "source_text",
+    "conditions_text",
+    "sample_info_text",
+)
+
+STANDARD_ENRICH_VISIBLE_FIELDS: tuple[str, ...] = (
     "row_id",
     "raw_test_type",
     "canonical_test_type",
     "standard_codes",
     "pricing_mode",
     "pricing_quantity",
-    "repeat_count",
+    "sample_length_mm",
+    "sample_width_mm",
+    "sample_height_mm",
+    "sample_weight_kg",
+    "required_temp_min",
+    "required_temp_max",
+    "required_humidity_min",
+    "required_humidity_max",
+    "required_temp_change_rate",
+    "required_freq_min",
+    "required_freq_max",
+    "required_accel_min",
+    "required_accel_max",
+    "required_displacement_min",
+    "required_displacement_max",
+    "required_irradiance_min",
+    "required_irradiance_max",
+    "required_water_temp_min",
+    "required_water_temp_max",
+    "required_water_flow_min",
+    "required_water_flow_max",
+    "planned_standard_fields",
+    "discovered_standard_fields",
+    "source_text",
+    "conditions_text",
+    "sample_info_text",
+)
+
+STANDARD_DISCOVERY_VISIBLE_FIELDS: tuple[str, ...] = (
+    "row_id",
+    "raw_test_type",
+    "canonical_test_type",
+    "standard_codes",
+    "planned_standard_fields",
+    "required_temp_min",
+    "required_temp_max",
+    "required_humidity_min",
+    "required_humidity_max",
+    "required_temp_change_rate",
+    "required_freq_min",
+    "required_freq_max",
+    "required_accel_min",
+    "required_accel_max",
+    "required_displacement_min",
+    "required_displacement_max",
+    "required_irradiance_min",
+    "required_irradiance_max",
+    "required_water_temp_min",
+    "required_water_temp_max",
+    "required_water_flow_min",
+    "required_water_flow_max",
+    "source_text",
+    "conditions_text",
+    "sample_info_text",
+)
+
+CONTEXT_JUDGE_VISIBLE_FIELDS: tuple[str, ...] = (
+    "row_id",
+    "raw_test_type",
+    "canonical_test_type",
+    "standard_codes",
     "sample_length_mm",
     "sample_width_mm",
     "sample_height_mm",
@@ -70,18 +163,33 @@ class ModelFillResult:
     raw_response: str = ""
 
 
+@dataclass(slots=True)
+class StandardFieldDiscoveryItem:
+    row_id: str
+    discovered_standard_fields: list[str]
+    extra_standard_requirements: list[ExtraStandardRequirement]
+
+
+@dataclass(slots=True)
+class StandardFieldDiscoveryResult:
+    items: list[StandardFieldDiscoveryItem]
+    summary: str = ""
+    raw_response: str = ""
+
+
 def _load_prompts(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _schema_example() -> dict[str, Any]:
+def _schema_example(visible_fields: tuple[str, ...]) -> dict[str, Any]:
     example = FormRow.schema_example()
-    payload = {field: example.get(field, "" if field != "standard_codes" else []) for field in MODEL_FIELDS}
-    payload["row_id"] = ""
+    payload = {field: example.get(field, "" if field != "standard_codes" else []) for field in visible_fields}
+    if "row_id" in visible_fields:
+        payload["row_id"] = ""
     return {"items": [payload]}
 
 
-def _rules_text(*, preserve_row_ids: bool) -> str:
+def _rules_text(*, preserve_row_ids: bool, include_sample_count: bool) -> str:
     lines = [
         "1. 只输出 JSON，对象根节点必须是 items 数组。",
         "2. 一个测试项目对应一行，不要把同一项目重复拆成多行。",
@@ -92,11 +200,14 @@ def _rules_text(*, preserve_row_ids: bool) -> str:
         "7. 遇到无法确定的字段留空字符串、空数组或 null，不要编造。",
         "8. 如果文档写的是确定单值而不是范围，例如温度 80℃、湿度 95%RH、水温 25℃、流量 10L/min、辐照 800W/m2，就把对应的 min/max 两个字段都填成同一个值。",
         "9. 文中的 `[IMAGE_n]` 与图片输入一一对应，图片是文档插图，不是时间序列视频帧。",
-        "10. `pricing_quantity` 表示单次执行的计价数量，例如 5 小时；`repeat_count` 表示相同测试需要重复执行的次数/工件数，例如 3 件样品各做一遍就填 3。",
+        "10. `pricing_quantity` 表示单次执行的计价数量，例如 5 小时。",
         "11. `required_temp_change_rate` 是唯一允许通过计算或推断得到的字段：如果文档或标准明确给出温变速率，则直接填写数值部分；如果没有直接给出，但给出了温度范围和对应升温/降温耗时，可以据此计算并填写；如果只有温度范围没有对应耗时，或只有总时长但无法确认对应的是升降温阶段，就不要猜。",
     ]
+    if include_sample_count:
+        lines.insert(10, "`sample_count` 表示本次测试的总件数/总样品数，例如 10 件；如果文档没有明确写出就留空。")
     if preserve_row_ids:
-        lines.append("12. 如果是在补全已有表格，必须尽量保留已有行的 `row_id`，并在原有行上补字段，不要新增重复行。")
+        lines.append("如果是在补全已有表格，必须尽量保留已有行的 `row_id`，并在原有行上补字段，不要新增重复行。")
+    lines = [f"{idx}. {line}" for idx, line in enumerate(lines, start=1)]
     return "\n".join(lines)
 
 
@@ -148,7 +259,7 @@ def _normalize_item_payload(item: dict[str, Any]) -> dict[str, Any]:
             dims = re.findall(r"-?\d+(?:\.\d+)?", value)
             payload[field_name] = float(dims[0]) if dims else None
     for field_name in (
-        "pricing_quantity", "repeat_count", "sample_weight_kg",
+        "pricing_quantity", "sample_count", "repeat_count", "sample_weight_kg",
         "required_temp_min", "required_temp_max",
         "required_humidity_min", "required_humidity_max",
         "required_temp_change_rate",
@@ -201,6 +312,7 @@ class QwenRequester:
             user_template=str(prompt["user"]),
             documents=documents,
             current_rows=None,
+            visible_fields=DOCUMENT_EXTRACT_VISIBLE_FIELDS,
         )
         content = self._stream_text(messages, run_dir=run_dir, request_name="文档抽取")
         return self._parse_form_result(content)
@@ -220,9 +332,32 @@ class QwenRequester:
             user_template=str(prompt["user"]),
             current_rows=current_rows,
             target_fields_by_row=target_fields_by_row or {},
+            visible_fields=STANDARD_ENRICH_VISIBLE_FIELDS,
         )
         content = self._stream_text(messages, run_dir=run_dir, request_name="标准证据补表")
         return self._parse_form_result(content)
+
+    def discover_standard_fields(
+        self,
+        current_rows: list[FormRow],
+        *,
+        target_fields_by_row: dict[str, list[str]] | None = None,
+        supported_fields: list[str] | None = None,
+        run_dir: Path | None = None,
+    ) -> StandardFieldDiscoveryResult:
+        if not any(row.standard_evidences for row in current_rows):
+            return StandardFieldDiscoveryResult(items=[], summary="无可用于字段发现的标准证据")
+        prompt = self.prompts["standard_field_discovery"]
+        messages = self._build_discovery_messages(
+            system_prompt=str(prompt["system"]),
+            user_template=str(prompt["user"]),
+            current_rows=current_rows,
+            target_fields_by_row=target_fields_by_row or {},
+            supported_fields=supported_fields or [],
+            visible_fields=STANDARD_DISCOVERY_VISIBLE_FIELDS,
+        )
+        content = self._stream_text(messages, run_dir=run_dir, request_name="标准字段发现")
+        return self._parse_standard_field_discovery_result(content, supported_fields=supported_fields or [])
 
     def judge_standard_context(
         self,
@@ -239,6 +374,7 @@ class QwenRequester:
             row=row,
             evidence=evidence,
             target_fields=target_fields or [],
+            visible_fields=CONTEXT_JUDGE_VISIBLE_FIELDS,
         )
         content = self._stream_text(messages, run_dir=run_dir, request_name="标准上下文判定")
         return self._parse_standard_context_decision(content)
@@ -250,16 +386,23 @@ class QwenRequester:
         user_template: str,
         documents: list[NormalizedDocument],
         current_rows: list[FormRow] | None,
+        visible_fields: tuple[str, ...],
     ) -> list[dict[str, Any]]:
         manifest = self._document_manifest(documents)
         document_text = self._document_text(documents)
-        schema_json = json.dumps(_schema_example(), ensure_ascii=False, indent=2)
-        current_form = json.dumps(self._rows_for_model(current_rows or []), ensure_ascii=False, indent=2)
+        schema_json = json.dumps(_schema_example(visible_fields), ensure_ascii=False, indent=2)
+        current_form = json.dumps(self._rows_for_model(current_rows or [], visible_fields), ensure_ascii=False, indent=2)
         user_text = (
             user_template.replace("$document_manifest", manifest)
             .replace("$document_text", document_text)
             .replace("$schema_json", schema_json)
-            .replace("$rules_text", _rules_text(preserve_row_ids=current_rows is not None))
+            .replace(
+                "$rules_text",
+                _rules_text(
+                    preserve_row_ids=current_rows is not None,
+                    include_sample_count=True,
+                ),
+            )
             .replace("$current_form", current_form)
         )
 
@@ -277,9 +420,10 @@ class QwenRequester:
         user_template: str,
         current_rows: list[FormRow],
         target_fields_by_row: dict[str, list[str]],
+        visible_fields: tuple[str, ...],
     ) -> list[dict[str, Any]]:
-        schema_json = json.dumps(_schema_example(), ensure_ascii=False, indent=2)
-        current_form = json.dumps(self._rows_for_model(current_rows), ensure_ascii=False, indent=2)
+        schema_json = json.dumps(_schema_example(visible_fields), ensure_ascii=False, indent=2)
+        current_form = json.dumps(self._rows_for_model(current_rows, visible_fields), ensure_ascii=False, indent=2)
         evidence_manifest, evidence_text = self._row_evidence_text(current_rows)
         target_manifest, target_text = self._row_target_fields_text(current_rows, target_fields_by_row)
         user_text = (
@@ -289,7 +433,13 @@ class QwenRequester:
             .replace("$evidence_manifest", evidence_manifest)
             .replace("$evidence_text", evidence_text)
             .replace("$schema_json", schema_json)
-            .replace("$rules_text", _rules_text(preserve_row_ids=True))
+            .replace(
+                "$rules_text",
+                _rules_text(
+                    preserve_row_ids=True,
+                    include_sample_count=False,
+                ),
+            )
         )
         return [{"role": "system", "content": system_prompt}, {"role": "user", "content": [{"type": "text", "text": user_text}]}]
 
@@ -301,14 +451,59 @@ class QwenRequester:
         row: FormRow,
         evidence: StandardEvidence,
         target_fields: list[str],
+        visible_fields: tuple[str, ...],
     ) -> list[dict[str, Any]]:
-        current_row = json.dumps(self._rows_for_model([row]), ensure_ascii=False, indent=2)
+        current_row = json.dumps(self._rows_for_model([row], visible_fields), ensure_ascii=False, indent=2)
         evidence_text = "\n".join(self._format_evidence_block(evidence))
         target_text = "\n".join(f"- {field}" for field in target_fields) if target_fields else "- (无明确目标字段)"
         user_text = (
             user_template.replace("$current_row", current_row)
             .replace("$evidence_text", evidence_text)
             .replace("$target_fields", target_text)
+        )
+        return [{"role": "system", "content": system_prompt}, {"role": "user", "content": [{"type": "text", "text": user_text}]}]
+
+    def _build_discovery_messages(
+        self,
+        *,
+        system_prompt: str,
+        user_template: str,
+        current_rows: list[FormRow],
+        target_fields_by_row: dict[str, list[str]],
+        supported_fields: list[str],
+        visible_fields: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        current_form = json.dumps(self._rows_for_model(current_rows, visible_fields), ensure_ascii=False, indent=2)
+        evidence_manifest, evidence_text = self._row_evidence_text(current_rows)
+        target_manifest, target_text = self._row_target_fields_text(current_rows, target_fields_by_row)
+        supported_fields_text = "\n".join(f"- {field}" for field in supported_fields) if supported_fields else "- (无)"
+        schema_json = json.dumps(
+            {
+                "items": [
+                    {
+                        "row_id": "",
+                        "discovered_standard_fields": ["required_temp_max"],
+                        "extra_standard_requirements": [
+                            {
+                                "requirement_name": "通电状态",
+                                "requirement_text": "试验期间样品应保持通电运行",
+                                "source_section": "5.1.3",
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        user_text = (
+            user_template.replace("$current_form", current_form)
+            .replace("$target_manifest", target_manifest)
+            .replace("$target_text", target_text)
+            .replace("$supported_fields_text", supported_fields_text)
+            .replace("$evidence_manifest", evidence_manifest)
+            .replace("$evidence_text", evidence_text)
+            .replace("$schema_json", schema_json)
         )
         return [{"role": "system", "content": system_prompt}, {"role": "user", "content": [{"type": "text", "text": user_text}]}]
 
@@ -333,8 +528,8 @@ class QwenRequester:
             sections.append("\n".join(section).strip())
         return "\n\n".join(sections).strip()
 
-    def _rows_for_model(self, rows: list[FormRow]) -> dict[str, Any]:
-        return {"items": [{field: getattr(row, field) for field in MODEL_FIELDS} for row in rows]}
+    def _rows_for_model(self, rows: list[FormRow], visible_fields: tuple[str, ...]) -> dict[str, Any]:
+        return {"items": [{field: getattr(row, field) for field in visible_fields} for row in rows]}
 
     def _row_evidence_text(self, rows: list[FormRow]) -> tuple[str, str]:
         manifest_lines: list[str] = []
@@ -447,3 +642,73 @@ class QwenRequester:
         decision = StandardContextDecision.model_validate(payload)
         logger.info("标准上下文判定完成: decision=%s reason=%s", decision.decision, decision.reason or "-")
         return decision
+
+    def _parse_standard_field_discovery_result(
+        self,
+        content: str,
+        *,
+        supported_fields: list[str],
+    ) -> StandardFieldDiscoveryResult:
+        payload = json.loads(_extract_json_text(content))
+        if isinstance(payload, list):
+            raw_items, summary = payload, ""
+        else:
+            raw_items = payload.get("items") or []
+            summary = str(payload.get("summary") or "").strip()
+
+        supported = set(supported_fields)
+        items: list[StandardFieldDiscoveryItem] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            row_id = str(item.get("row_id") or "").strip()
+            discovered = _normalize_discovered_fields(item.get("discovered_standard_fields"), supported)
+            extras = _normalize_extra_requirements(item.get("extra_standard_requirements"))
+            if row_id:
+                items.append(
+                    StandardFieldDiscoveryItem(
+                        row_id=row_id,
+                        discovered_standard_fields=discovered,
+                        extra_standard_requirements=extras,
+                    )
+                )
+        logger.info("标准字段发现解析完成: rows=%s summary=%s", len(items), summary or "-")
+        return StandardFieldDiscoveryResult(items=items, summary=summary, raw_response=content)
+
+
+def _normalize_discovered_fields(value: Any, supported_fields: set[str]) -> list[str]:
+    raw_values: list[str]
+    if isinstance(value, list):
+        raw_values = [str(item).strip() for item in value]
+    elif isinstance(value, str):
+        raw_values = [part.strip() for part in re.split(r"[,，;\n]+", value) if part.strip()]
+    else:
+        raw_values = []
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for field_name in raw_values:
+        if field_name in supported_fields and field_name not in seen:
+            seen.add(field_name)
+            result.append(field_name)
+    return result
+
+
+def _normalize_extra_requirements(value: Any) -> list[ExtraStandardRequirement]:
+    if not isinstance(value, list):
+        return []
+    items: list[ExtraStandardRequirement] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw in value:
+        if isinstance(raw, str):
+            model = ExtraStandardRequirement(requirement_name="", requirement_text=raw.strip(), source_section="")
+        elif isinstance(raw, dict):
+            model = ExtraStandardRequirement.model_validate(raw)
+        else:
+            continue
+        key = (model.requirement_name, model.requirement_text, model.source_section)
+        if key in seen or (not model.requirement_name and not model.requirement_text):
+            continue
+        seen.add(key)
+        items.append(model)
+    return items

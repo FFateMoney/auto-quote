@@ -6,11 +6,9 @@ from functools import lru_cache
 from pathlib import Path
 
 from backend.common.config import PROJECT_ROOT, as_bool, load_config, nested, resolve_path
-from backend.common.pipeline_state import migrate_cleaned_dir
 
 
 DEFAULT_RUN_DIR = PROJECT_ROOT / "runtime" / "runs"
-DEFAULT_STANDARD_KB_DIR = PROJECT_ROOT / "data" / "cleaned_markdown"
 DEFAULT_STANDARDS_SOURCE_DIR = PROJECT_ROOT / "data" / "origin"
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "backend" / "quote" / "llm" / "prompts.json"
 DEFAULT_AIWORD_SCRIPT = Path("/my_storage/chen/auto-quote-engine/AIWord/scripts/ai_edit.py")
@@ -23,7 +21,6 @@ class QuoteSettings:
     run_dir: Path
     prompts_path: Path
     aiword_script_path: Path
-    standard_kb_dir: Path
     standard_index_enable: bool
     standard_retrieval_top_k: int
     standard_retrieval_expand_neighbors: bool
@@ -45,16 +42,12 @@ def get_settings() -> QuoteSettings:
             return v
         return nested(cfg, "services", "quote_service", *config_keys, default=default)
 
-    standard_kb_dir = resolve_path(PROJECT_ROOT, _s("QUOTE_STANDARD_KB_DIR", "standard_kb_dir"), fallback=DEFAULT_STANDARD_KB_DIR)
-    standard_kb_dir = migrate_cleaned_dir(standard_kb_dir)
-
     return QuoteSettings(
         host=str(_s("QUOTE_HOST", "host", default="127.0.0.1")).strip(),
         port=int(_s("QUOTE_PORT", "port", default=8000)),
         run_dir=resolve_path(PROJECT_ROOT, _s("QUOTE_RUN_DIR", "run_dir"), fallback=DEFAULT_RUN_DIR),
         prompts_path=resolve_path(PROJECT_ROOT, _s("QUOTE_PROMPTS_PATH", "prompts_path"), fallback=DEFAULT_PROMPTS_PATH),
         aiword_script_path=resolve_path(PROJECT_ROOT, _s("QUOTE_AIWORD_SCRIPT", "aiword_script_path"), fallback=DEFAULT_AIWORD_SCRIPT),
-        standard_kb_dir=standard_kb_dir,
         standard_index_enable=as_bool(_s("QUOTE_STANDARD_INDEX_ENABLE", "standard_index_enable"), default=True),
         standard_retrieval_top_k=int(_s("QUOTE_STANDARD_RETRIEVAL_TOP_K", "standard_retrieval_top_k", default=5)),
         standard_retrieval_expand_neighbors=as_bool(_s("QUOTE_STANDARD_RETRIEVAL_EXPAND_NEIGHBORS", "standard_retrieval_expand_neighbors"), default=True),
