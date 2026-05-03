@@ -64,6 +64,19 @@ def _to_int(v: Any) -> int | None:
     return None if v in (None, "") else int(v)
 
 
+def _normalize_aliases(values: list[str]) -> tuple[str, ...]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        alias = str(value or "").strip()
+        key = alias.lower()
+        if not alias or key in seen:
+            continue
+        seen.add(key)
+        aliases.append(alias)
+    return tuple(aliases)
+
+
 class CatalogGateway:
     def __init__(self) -> None:
         self.test_types: list[TestTypeRecord] = []
@@ -73,7 +86,7 @@ class CatalogGateway:
         self.pricing_by_test_type_id: dict[int, list[EquipmentPricingRecord]] = defaultdict(list)
         self.equipment_ids_by_test_type_id: dict[int, set[str]] = defaultdict(set)
         self.load_error = ""
-        self._load()
+        self.reload()
 
     def get_test_type(self, name: str) -> TestTypeRecord | None:
         return self.test_types_by_name.get(name)
@@ -102,6 +115,38 @@ class CatalogGateway:
     def get_pricing_rows(self, test_type_name: str) -> list[EquipmentPricingRecord]:
         record = self.get_test_type(test_type_name)
         return list(self.pricing_by_test_type_id.get(record.id, ())) if record else []
+
+    def reload(self) -> None:
+        self.test_types.clear()
+        self.test_types_by_id.clear()
+        self.test_types_by_name.clear()
+        self.equipment_by_id.clear()
+        self.pricing_by_test_type_id.clear()
+        self.equipment_ids_by_test_type_id.clear()
+        self.load_error = ""
+        self._load()
+
+    def update_test_type_aliases(self, test_type_id: int, aliases: list[str]) -> TestTypeRecord:
+        normalized = _normalize_aliases(aliases)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update public.test_types
+                    set aliases = %s::text[]
+                    where id = %s
+                    returning id
+                    """,
+                    (list(normalized), test_type_id),
+                )
+                if cur.fetchone() is None:
+                    raise KeyError(test_type_id)
+
+        self.reload()
+        record = self.test_types_by_id.get(test_type_id)
+        if record is None:
+            raise KeyError(test_type_id)
+        return record
 
     def _connect(self):
         kwargs = {k: v for k, v in get_settings().database.items() if v not in (None, "", [])}

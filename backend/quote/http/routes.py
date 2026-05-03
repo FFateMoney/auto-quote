@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from backend.quote.models import ResumeRequest, UploadedDocument
+from backend.quote.models import ResumeRequest, TestTypeAliasesUpdateRequest, UploadedDocument
 from backend.quote.orchestrator import QuoteOrchestrator
 from backend.quote.settings import get_settings
 
@@ -74,6 +74,27 @@ def list_test_types() -> dict[str, object]:
     }
 
 
+@router.put("/api/catalog/test-types/{test_type_id}/aliases")
+def update_test_type_aliases(test_type_id: int, request: TestTypeAliasesUpdateRequest) -> dict[str, object]:
+    try:
+        record = get_orchestrator().catalog.update_test_type_aliases(test_type_id, request.aliases)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="test_type_not_found") from exc
+    except Exception as exc:
+        logger.exception("Update test type aliases failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "item": {
+            "id": record.id,
+            "name": record.name,
+            "aliases": list(record.aliases),
+            "pricing_mode": record.pricing_mode,
+        },
+        "load_error": get_orchestrator().catalog.load_error,
+    }
+
+
 @router.post("/api/runs")
 async def create_run(files: list[UploadFile] = File(...)):
     if not files:
@@ -116,6 +137,22 @@ def resume_run(run_id: str, request: ResumeRequest):
         return get_orchestrator().resume(run_id=run_id, request=request).model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="run_not_found") from exc
+
+
+@router.post("/api/runs/{run_id}/export")
+def export_run(run_id: str):
+    try:
+        path = get_orchestrator().export_docx(run_id)
+        return FileResponse(
+            path, 
+            filename=path.name, 
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Export failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/api/runs/{run_id}/artifacts/{artifact_path:path}")

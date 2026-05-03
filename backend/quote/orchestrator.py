@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+from docx import Document
+from backend.common.config import PROJECT_ROOT
 from backend.common.logging import append_run_log
 from backend.quote.catalog import CatalogGateway
 from backend.quote.form_ops import apply_manual_values
@@ -328,6 +331,114 @@ class QuoteOrchestrator:
             if stage.stage_id == stage_id:
                 return _copy(stage.items)
         return []
+
+    def export_docx(self, run_id: str) -> Path:
+        from backend.quote.settings import get_settings
+        state = self.load_run(run_id)
+        settings = get_settings()
+        template_path = PROJECT_ROOT / "doc" / "quote_tep.docx"
+        if not template_path.exists():
+            raise FileNotFoundError(f"Template not found: {template_path}")
+
+        run_dir = settings.run_dir / run_id
+        output_path = run_dir / f"报价单_{run_id}.docx"
+
+        doc = Document(template_path)
+
+        # 1. 填充表格 (Table 1: 序号 | 测试项目 | 备注 | 基本金(元) | 单价(元) | 试验总量 | 合计（元）)
+        if len(doc.tables) > 1:
+            table = doc.tables[1]
+            # 查找数据起始行（序号为1的行）
+            start_row_idx = -1
+            for i, row in enumerate(table.rows):
+                if row.cells[0].text.strip() == "1":
+                    start_row_idx = i
+                    break
+            
+            if start_row_idx != -1:
+                items = state.final_form_items
+                
+                # 识别模板中现有的数字序号行（数据行）
+                data_row_indices = []
+                total_row_idx = -1
+                for i in range(start_row_idx, len(table.rows)):
+                    cell_text = table.rows[i].cells[0].text.strip()
+                    if cell_text.isdigit():
+                        data_row_indices.append(i)
+                    elif "总计" in cell_text:
+                        total_row_idx = i
+                        break
+                
+                # 如果实际项目数多于模板预设行数，在总计行之前插入新行
+                if len(items) > len(data_row_indices):
+                    # 如果没有找到总计行，就在末尾加，否则在总计行之前加
+                    insert_before_idx = total_row_idx if total_row_idx != -1 else len(table.rows)
+                    for _ in range(len(items) - len(data_row_indices)):
+                        # 注意：python-docx 的 add_row 总是加在末尾
+                        # 如果需要插入，逻辑会复杂些，这里简单处理：先加行，后面填充时按序号来
+                        table.add_row()
+                    
+                    # 重新刷新行索引
+                    data_row_indices = []
+                    total_row_idx = -1
+                    for i in range(start_row_idx, len(table.rows)):
+                        cell_text = table.rows[i].cells[0].text.strip()
+                        if cell_text.isdigit() or cell_text == "": # 包含新加的空行
+                            data_row_indices.append(i)
+                        elif "总计" in cell_text:
+                            total_row_idx = i
+                            break
+
+                # 填充数据或清空多余模板行
+                total_amount = 0.0
+                for i, row_idx in enumerate(data_row_indices):
+                    row = table.rows[row_idx]
+                    if i < len(items):
+                        item = items[i]
+                        row.cells[0].text = str(i + 1)
+                        row.cells[1].text = item.canonical_test_type or item.raw_test_type or ""
+                        row.cells[2].text = "" # 备注留空
+                        row.cells[3].text = f"{item.base_fee:g}" if item.base_fee is not None else "0"
+                        row.cells[4].text = f"{item.unit_price:g}" if item.unit_price is not None else "0"
+                        row.cells[5].text = f"{item.pricing_quantity:g}" if item.pricing_quantity is not None else "0"
+                        row.cells[6].text = f"{item.total_price:g}" if item.total_price is not None else "0"
+                        total_amount += (item.total_price or 0.0)
+                    else:
+                        # 清空多余的模板行内容
+                        for cell in row.cells:
+                            cell.text = ""
+
+                # 更新总计行
+                if total_row_idx != -1:
+                    table.rows[total_row_idx].cells[6].text = f"{total_amount:g}"
+
+        # 2. 替换文本占位符 (日期和注)
+        now = datetime.now()
+        date_str = now.strftime("%Y年%m月%d日")
+        
+        for para in doc.paragraphs:
+            if "20xx年x月x日" in para.text:
+                para.text = para.text.replace("20xx年x月x日", date_str)
+        
+        # 处理表格内的占位符（注：部分通常在最后一行的大单元格里）
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if "x" in cell.text or "xxxx" in cell.text:
+                        # 注1: 样品名 (留空)
+                        new_text = cell.text.replace("xxxx", "")
+                        # 注3: 项目数量
+                        new_text = new_text.replace("x个测试项目", f"{len(state.final_form_items)}个测试项目")
+                        cell.text = new_text
+
+        doc.save(output_path)
+        
+        # 更新状态中的产物列表
+        if str(output_path.name) not in state.artifacts.exported_files:
+            state.artifacts.exported_files.append(output_path.name)
+            self._save(run_dir / "run_state.json", state)
+            
+        return output_path
 
     def _save(self, path: Path, state: RunState) -> None:
         self.store.save(path, state)

@@ -1,0 +1,6 @@
+{
+  "name": "智能检测报价管理系统",
+  "description": "一个用于管理实验室检测项目、自动匹配设备并生成结构化报价报表的智能系统。",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

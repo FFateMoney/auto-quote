@@ -452,6 +452,28 @@ td {
   font-size: 0.9rem;
 }
 
+.debug-toggle-button {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  z-index: 900;
+  border: 1px solid rgba(121, 102, 83, 0.18);
+  border-radius: 999px;
+  background: #fffdf9;
+  color: #61462f;
+  box-shadow: 0 12px 28px rgba(59, 71, 92, 0.14);
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 700;
+  padding: 9px 15px;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.debug-toggle-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 34px rgba(59, 71, 92, 0.18);
+}
+
 .preview-overlay {
   position: fixed;
   inset: 0;
@@ -473,6 +495,29 @@ td {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.debug-dialog {
+  width: min(760px, 100%);
+  max-height: min(80vh, 760px);
+  background: #fffdf9;
+  border-radius: 24px;
+  box-shadow: 0 24px 64px rgba(20, 27, 38, 0.28);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.debug-dialog-subtitle {
+  color: #6d7682;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.debug-dialog-body {
+  padding: 18px;
+  overflow: auto;
+  background: #fffaf3;
 }
 
 .picker-dialog {
@@ -653,6 +698,15 @@ td {
 
   .preview-dialog {
     height: min(88vh, 100%);
+  }
+
+  .debug-toggle-button {
+    top: 12px;
+    left: 12px;
+  }
+
+  .debug-dialog {
+    max-height: min(88vh, 100%);
   }
 
   .picker-dialog {

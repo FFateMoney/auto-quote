@@ -220,3 +220,7 @@ class RunState(BaseModel):
 class ResumeRequest(BaseModel):
     row_id: str
     field_values: dict[str, Any]
+
+
+class TestTypeAliasesUpdateRequest(BaseModel):
+    aliases: list[str] = Field(default_factory=list)

@@ -960,6 +960,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [previewDocument, setPreviewDocument] = useState<PreviewDocument | null>(null);
+  const [debugPanelOpen, setDebugPanelOpen] = useState(false);
 
   const activeStage: FormStageSnapshot | undefined = useMemo(() => {
     if (!runState) {
@@ -985,6 +986,21 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [previewDocument]);
+
+  useEffect(() => {
+    if (!debugPanelOpen) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDebugPanelOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [debugPanelOpen]);
 
   async function submitFiles(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1039,6 +1055,12 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {runState ? (
+        <button className="debug-toggle-button" type="button" onClick={() => setDebugPanelOpen(true)}>
+          调试
+        </button>
+      ) : null}
+
       <header className="hero">
         <div>
           <div className="eyebrow">Auto Quote</div>
@@ -1104,34 +1126,6 @@ export default function App() {
             ) : null}
           </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <h3>阶段切换</h3>
-              <p>表头不变，只切换这张结构化报价表在不同步骤的填写快照。</p>
-            </div>
-            <div className="stage-strip">
-              {runState.form_stages.map((stage) => (
-                <button
-                  key={stage.stage_id}
-                  className={stage.stage_id === activeStage?.stage_id ? "stage-pill active" : "stage-pill"}
-                  type="button"
-                  onClick={() => setActiveStageId(stage.stage_id)}
-                >
-                  {stage.label}
-                </button>
-              ))}
-            </div>
-            {activeStage ? (
-              <div className="stage-notes">
-                {activeStage.notes.map((note, index) => (
-                  <div className="note-chip" key={`${activeStage.stage_id}-${index}`}>
-                    {note}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </section>
-
           <StructuredFormPanel
             activeStage={activeStage}
             runState={runState}
@@ -1152,6 +1146,55 @@ export default function App() {
           <RejectedEquipmentPanel activeStage={activeStage} />
 
         </>
+      ) : null}
+
+      {debugPanelOpen && runState ? (
+        <div className="preview-overlay" role="presentation" onClick={() => setDebugPanelOpen(false)}>
+          <div
+            className="debug-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="debug-dialog-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="preview-header">
+              <div>
+                <div id="debug-dialog-title" className="preview-title">
+                  阶段切换
+                </div>
+                <div className="debug-dialog-subtitle">
+                  表头不变，只切换这张结构化报价表在不同步骤的填写快照。
+                </div>
+              </div>
+              <button className="preview-close-button" type="button" onClick={() => setDebugPanelOpen(false)}>
+                关闭
+              </button>
+            </div>
+            <div className="debug-dialog-body">
+              <div className="stage-strip">
+                {runState.form_stages.map((stage) => (
+                  <button
+                    key={stage.stage_id}
+                    className={stage.stage_id === activeStage?.stage_id ? "stage-pill active" : "stage-pill"}
+                    type="button"
+                    onClick={() => setActiveStageId(stage.stage_id)}
+                  >
+                    {stage.label}
+                  </button>
+                ))}
+              </div>
+              {activeStage && activeStage.notes.length > 0 ? (
+                <div className="stage-notes">
+                  {activeStage.notes.map((note, index) => (
+                    <div className="note-chip" key={`${activeStage.stage_id}-${index}`}>
+                      {note}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {previewDocument ? (

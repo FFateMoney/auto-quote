@@ -2,8 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FRONTEND_DIR="${AUTO_QUOTE_FRONTEND_DIR:-frontendV2}"
 
-cd "$ROOT_DIR/frontend/web"
+cd "$ROOT_DIR/$FRONTEND_DIR"
 
 CONFIG_PATH="${AUTO_QUOTE_CONFIG_PATH:-$ROOT_DIR/backend/dev/config.yaml}"
 CONDA_ENV=""
