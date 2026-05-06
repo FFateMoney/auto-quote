@@ -1,6 +1,14 @@
 runtime:
   run_dir: "runtime/runs"
 
+auth:
+  enabled: true
+  password: "change-me"
+  session_secret: "change-this-to-a-long-random-secret"
+  session_ttl_seconds: 28800
+  cookie_name: "auto_quote_session"
+  secure_cookie: false
+
 services:
   quote_service:
     host: "127.0.0.1"

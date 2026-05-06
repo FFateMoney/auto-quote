@@ -4,8 +4,8 @@
  */
 
 import React from 'react';
-import {Download, HelpCircle, LayoutDashboard, Settings, UploadCloud, X} from 'lucide-react';
-import {API_BASE, buildArtifactUrl, createRun, exportRun, fetchRun, toErrorMessage} from './api';
+import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, Settings, ShieldCheck, UploadCloud, X} from 'lucide-react';
+import {API_BASE, buildArtifactUrl, createRun, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage} from './api';
 import {EquipmentTables} from './components/EquipmentTables';
 import {StatusDashboard} from './components/StatusDashboard';
 import {StructuredReportGrid} from './components/StructuredReportGrid';
@@ -23,6 +23,10 @@ type PreviewDocument = {
 };
 
 export default function App() {
+  const [authChecking, setAuthChecking] = React.useState(true);
+  const [authenticated, setAuthenticated] = React.useState(false);
+  const [authSubmitting, setAuthSubmitting] = React.useState(false);
+  const [authError, setAuthError] = React.useState('');
   const [view, setView] = React.useState<View>('upload');
   const [runState, setRunState] = React.useState<RunState | null>(null);
   const [activeStageId, setActiveStageId] = React.useState('');
@@ -31,6 +35,42 @@ export default function App() {
   const [error, setError] = React.useState('');
   const [stageDialogOpen, setStageDialogOpen] = React.useState(false);
   const [previewDocument, setPreviewDocument] = React.useState<PreviewDocument | null>(null);
+
+  React.useEffect(() => {
+    let mounted = true;
+    async function checkSession() {
+      try {
+        const session = await fetchAuthSession();
+        if (mounted) {
+          setAuthenticated(session.authenticated);
+        }
+      } catch {
+        if (mounted) {
+          setAuthenticated(false);
+        }
+      } finally {
+        if (mounted) {
+          setAuthChecking(false);
+        }
+      }
+    }
+    void checkSession();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    function handleAuthExpired() {
+      setAuthenticated(false);
+      setRunState(null);
+      setView('upload');
+      setError('');
+      setAuthError('登录已过期，请重新输入密码。');
+    }
+    window.addEventListener('autoquote:auth-expired', handleAuthExpired);
+    return () => window.removeEventListener('autoquote:auth-expired', handleAuthExpired);
+  }, []);
 
   const activeStage: FormStageSnapshot | undefined = React.useMemo(() => {
     if (!runState) {
@@ -140,6 +180,45 @@ export default function App() {
     });
   }
 
+  async function handleLogin(password: string) {
+    setAuthSubmitting(true);
+    setAuthError('');
+    try {
+      await loginWithPassword(password);
+      setAuthenticated(true);
+    } catch (err) {
+      setAuthError(toErrorMessage(err, '密码验证失败'));
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  async function handleLogout() {
+    setAuthSubmitting(true);
+    setAuthError('');
+    try {
+      await logout();
+    } finally {
+      setAuthenticated(false);
+      setRunState(null);
+      setView('upload');
+      setAuthSubmitting(false);
+    }
+  }
+
+  if (authChecking) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-500">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        正在检查授权状态...
+      </div>
+    );
+  }
+
+  if (!authenticated) {
+    return <LoginScreen error={authError} isSubmitting={authSubmitting} onSubmit={(password) => void handleLogin(password)} />;
+  }
+
   return (
     <div className="min-h-screen flex text-slate-900">
       <aside className="w-16 md:w-20 bg-slate-900 flex flex-col items-center py-8 gap-8 shrink-0">
@@ -187,15 +266,22 @@ export default function App() {
                 </button>
               </>
             ) : null}
-            <div className="w-8 h-8 rounded-full bg-slate-200 border-2 border-white shadow-sm overflow-hidden flex items-center justify-center">
-              <span className="text-[10px] font-bold text-slate-500">CX</span>
-            </div>
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              disabled={authSubmitting}
+              className="btn-secondary text-xs inline-flex items-center gap-1.5"
+              aria-label="退出登录"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              退出
+            </button>
           </div>
         </header>
 
         <div className="p-4 md:p-8">
           {view === 'upload' ? (
-            <UploadSection apiBase={API_BASE} error={error} isSubmitting={submitting} onStart={(files) => void handleStart(files)} />
+            <UploadSection error={error} isSubmitting={submitting} onStart={(files) => void handleStart(files)} />
           ) : view === 'settings' ? (
             <TestTypeAliasManager />
           ) : runState ? (
@@ -301,6 +387,67 @@ export default function App() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function LoginScreen({
+  error,
+  isSubmitting,
+  onSubmit,
+}: {
+  error: string;
+  isSubmitting: boolean;
+  onSubmit: (password: string) => void;
+}) {
+  const [password, setPassword] = React.useState('');
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!password.trim() || isSubmitting) {
+      return;
+    }
+    onSubmit(password);
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8 text-slate-900">
+      <form className="glass-panel w-full max-w-md p-8" onSubmit={handleSubmit}>
+        <div className="mb-7 text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl border border-indigo-100 bg-indigo-50 text-indigo-600">
+            <ShieldCheck size={28} />
+          </div>
+          <h1 className="text-xl font-bold text-slate-800">智能检测报价系统</h1>
+          <p className="mt-2 text-sm text-slate-500">请输入授权密码后继续使用。</p>
+        </div>
+
+        <label className="block text-sm font-semibold text-slate-700" htmlFor="auth-password">
+          授权密码
+        </label>
+        <div className="mt-2 flex items-center rounded-xl border border-slate-200 bg-white px-3 focus-within:border-indigo-300 focus-within:ring-4 focus-within:ring-indigo-50">
+          <KeyRound className="h-4 w-4 shrink-0 text-slate-400" />
+          <input
+            id="auth-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            className="h-11 min-w-0 flex-1 bg-transparent px-3 text-sm font-medium text-slate-800 outline-none"
+            autoComplete="current-password"
+            autoFocus
+          />
+        </div>
+
+        {error ? <div className="mt-4 rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div> : null}
+
+        <button
+          type="submit"
+          disabled={!password.trim() || isSubmitting}
+          className="btn-primary mt-6 flex w-full items-center justify-center gap-2 disabled:opacity-50 disabled:shadow-none"
+        >
+          {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
+          {isSubmitting ? '验证中...' : '解锁使用'}
+        </button>
+      </form>
+    </main>
   );
 }
 

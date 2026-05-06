@@ -5,9 +5,18 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
+from backend.common.auth import (
+    clear_session_cookie,
+    get_auth_settings,
+    is_auth_configured,
+    set_session_cookie,
+    validate_session_token,
+    verify_password,
+)
 from backend.quote.models import ResumeRequest, TestTypeAliasesUpdateRequest, UploadedDocument
 from backend.quote.orchestrator import QuoteOrchestrator
 from backend.quote.settings import get_settings
@@ -16,6 +25,10 @@ from backend.quote.settings import get_settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _orchestrator: QuoteOrchestrator | None = None
+
+
+class LoginRequest(BaseModel):
+    password: str
 
 
 def get_orchestrator() -> QuoteOrchestrator:
@@ -54,6 +67,37 @@ def _build_run_id(first_file_name: str) -> str:
 @router.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.post("/api/auth/login")
+def login(request: LoginRequest) -> JSONResponse:
+    settings = get_auth_settings()
+    if not settings.enabled:
+        return JSONResponse({"authenticated": True, "expires_in": settings.session_ttl_seconds})
+    if not is_auth_configured(settings):
+        raise HTTPException(status_code=503, detail="auth_not_configured")
+    if not verify_password(request.password, settings):
+        raise HTTPException(status_code=401, detail="invalid_password")
+    response = JSONResponse({"authenticated": True, "expires_in": settings.session_ttl_seconds})
+    set_session_cookie(response, settings)
+    return response
+
+
+@router.post("/api/auth/logout")
+def logout() -> JSONResponse:
+    response = JSONResponse({"authenticated": False})
+    clear_session_cookie(response)
+    return response
+
+
+@router.get("/api/auth/session")
+def session(request: Request) -> dict[str, bool]:
+    settings = get_auth_settings()
+    token = request.cookies.get(settings.cookie_name, "")
+    return {
+        "auth_enabled": settings.enabled,
+        "authenticated": not settings.enabled or validate_session_token(token, settings),
+    }
 
 
 @router.get("/api/catalog/test-types")

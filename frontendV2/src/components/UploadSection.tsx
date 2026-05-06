@@ -8,7 +8,6 @@ import {CheckCircle2, FileText, Loader2, Upload, X} from 'lucide-react';
 import {motion} from 'motion/react';
 
 interface UploadSectionProps {
-  apiBase: string;
   error: string;
   isSubmitting: boolean;
   onStart: (files: File[]) => void;
@@ -16,7 +15,7 @@ interface UploadSectionProps {
 
 const ACCEPTED_FILES = '.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.bmp,.webp';
 
-export const UploadSection: React.FC<UploadSectionProps> = ({apiBase, error, isSubmitting, onStart}) => {
+export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting, onStart}) => {
   const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -91,10 +90,6 @@ export const UploadSection: React.FC<UploadSectionProps> = ({apiBase, error, isS
           {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
           {isSubmitting ? '处理中...' : '开始智能填表'}
         </button>
-
-        <p className="mt-6 text-xs text-slate-400 flex items-center justify-center gap-2">
-          当前 API 节点: <code className="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{apiBase}/runs</code>
-        </p>
       </div>
     </motion.div>
   );
