@@ -4,8 +4,9 @@
  */
 
 import React from 'react';
-import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, Settings, ShieldCheck, UploadCloud, X} from 'lucide-react';
-import {API_BASE, buildArtifactUrl, createRun, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage} from './api';
+import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, Settings, UploadCloud, X} from 'lucide-react';
+import {API_BASE, buildArtifactUrl, createRun, createRunFromText, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage} from './api';
+import logoUrl from './assets/logo_cut.png';
 import {EquipmentTables} from './components/EquipmentTables';
 import {StatusDashboard} from './components/StatusDashboard';
 import {StructuredReportGrid} from './components/StructuredReportGrid';
@@ -107,6 +108,25 @@ export default function App() {
       setView('dashboard');
     } catch (fetchError) {
       setError(toErrorMessage(fetchError, `${API_BASE}/runs 无法创建运行`));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleStartFromText(text: string) {
+    if (!text.trim()) {
+      setError('请先输入或粘贴报价需求文本。');
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      const next = await createRunFromText(text);
+      setRunState(next);
+      setActiveStageId(next.form_stages.at(-1)?.stage_id ?? next.current_stage);
+      setView('dashboard');
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, `${API_BASE}/runs/text 无法创建运行`));
     } finally {
       setSubmitting(false);
     }
@@ -240,19 +260,21 @@ export default function App() {
       </aside>
 
       <main className="flex-1 overflow-y-auto">
-        <header className="h-16 border-b border-slate-200/60 bg-white/70 backdrop-blur-md sticky top-0 z-20 px-4 md:px-8 flex items-center justify-between">
-          <h1 className="font-bold text-slate-800">
-            智能检测报价系统 <span className="text-slate-300 font-medium px-2">/</span> <span className="text-slate-500 font-medium text-sm">智慧实验室核心 v2.4</span>
+        <header className="relative h-16 border-b border-slate-200/60 bg-white/70 backdrop-blur-md sticky top-0 z-20 px-4 md:px-8 flex items-center justify-between">
+          <div className="absolute bottom-0 left-4 top-1 flex items-end md:left-8">
+            <img className="h-full w-52 object-contain object-left-bottom" src={logoUrl} alt="" />
+          </div>
+          <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-center text-lg font-bold text-slate-800">
+            <span>
+              千验智能报价系统
+            </span>
           </h1>
-          <div className="flex items-center gap-3">
+          <div className="relative z-10 ml-auto flex items-center gap-3">
             {view === 'dashboard' && runState ? (
               <>
                 <button type="button" onClick={() => void handleExport()} disabled={submitting} className="btn-secondary text-xs flex items-center gap-1.5">
                   <Download className="w-3.5 h-3.5" />
                   导出报价单
-                </button>
-                <button type="button" onClick={() => setStageDialogOpen(true)} className="btn-secondary text-xs">
-                  阶段切换
                 </button>
                 <button
                   type="button"
@@ -281,7 +303,12 @@ export default function App() {
 
         <div className="p-4 md:p-8">
           {view === 'upload' ? (
-            <UploadSection error={error} isSubmitting={submitting} onStart={(files) => void handleStart(files)} />
+            <UploadSection
+              error={error}
+              isSubmitting={submitting}
+              onStart={(files) => void handleStart(files)}
+              onStartFromText={(text) => void handleStartFromText(text)}
+            />
           ) : view === 'settings' ? (
             <TestTypeAliasManager />
           ) : runState ? (
@@ -413,10 +440,8 @@ function LoginScreen({
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8 text-slate-900">
       <form className="glass-panel w-full max-w-md p-8" onSubmit={handleSubmit}>
         <div className="mb-7 text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl border border-indigo-100 bg-indigo-50 text-indigo-600">
-            <ShieldCheck size={28} />
-          </div>
-          <h1 className="text-xl font-bold text-slate-800">智能检测报价系统</h1>
+          <img className="mx-auto mb-4 h-28 w-56 object-contain" src={logoUrl} alt="" />
+          <h1 className="text-xl font-bold text-slate-800">千验智能报价系统</h1>
           <p className="mt-2 text-sm text-slate-500">请输入授权密码后继续使用。</p>
         </div>
 

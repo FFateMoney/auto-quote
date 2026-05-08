@@ -7,6 +7,7 @@ from backend.quote.plugins.base import DocumentProcessorPlugin
 from backend.quote.plugins.excel import ExcelProcessorPlugin
 from backend.quote.plugins.image import ImageProcessorPlugin
 from backend.quote.plugins.pdf import PdfProcessorPlugin
+from backend.quote.plugins.text import TextProcessorPlugin
 from backend.quote.plugins.word import WordProcessorPlugin
 
 
@@ -24,6 +25,7 @@ class UnsupportedPlugin(DocumentProcessorPlugin):
 class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: list[DocumentProcessorPlugin] = [
+            TextProcessorPlugin(),
             WordProcessorPlugin(),
             ExcelProcessorPlugin(),
             PdfProcessorPlugin(),

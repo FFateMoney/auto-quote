@@ -82,6 +82,19 @@ export async function createRun(files: File[]): Promise<RunState> {
   return parseJsonResponse<RunState>(response, '创建运行');
 }
 
+export async function createRunFromText(text: string): Promise<RunState> {
+  const response = await fetchWithTimeout(
+    `${API_BASE}/runs/text`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    },
+    RUN_REQUEST_TIMEOUT_MS,
+  );
+  return parseJsonResponse<RunState>(response, '创建文本运行');
+}
+
 export async function fetchRun(run_id: string): Promise<RunState> {
   const response = await fetchWithTimeout(`${API_BASE}/runs/${encodeURIComponent(run_id)}`);
   return parseJsonResponse<RunState>(response, '获取运行状态');

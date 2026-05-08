@@ -31,6 +31,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class TextRunRequest(BaseModel):
+    text: str
+    title: str = ""
+
+
 def get_orchestrator() -> QuoteOrchestrator:
     global _orchestrator
     if _orchestrator is None:
@@ -165,6 +170,38 @@ async def create_run(files: list[UploadFile] = File(...)):
             )
         )
     return get_orchestrator().run(run_id=run_id, uploaded_documents=uploaded_documents).model_dump()
+
+
+@router.post("/api/runs/text")
+def create_text_run(request: TextRunRequest):
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="missing_text")
+    if len(text) > 100_000:
+        raise HTTPException(status_code=413, detail="text_too_large")
+
+    settings = get_settings()
+    label = request.title.strip() or text[:40]
+    run_id = _build_run_id(label or "pasted_text")
+    run_dir = settings.run_dir / run_id
+    uploaded_dir = run_dir / "uploaded"
+    uploaded_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_title = _sanitize_run_label(request.title or "pasted_text")
+    file_name = f"{safe_title}.txt"
+    stored_name = f"01_{file_name}"
+    stored_path = uploaded_dir / stored_name
+    stored_path.write_text(text, encoding="utf-8")
+
+    uploaded_document = UploadedDocument(
+        document_id="upload-1",
+        file_name=file_name,
+        media_type="text/plain",
+        stored_path=str(Path("uploaded") / stored_name),
+        local_path=str(stored_path),
+        source_kind="text",
+    )
+    return get_orchestrator().run(run_id=run_id, uploaded_documents=[uploaded_document]).model_dump()
 
 
 @router.get("/api/runs/{run_id}")

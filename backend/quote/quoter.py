@@ -305,6 +305,8 @@ class Quoter:
         ):
             if sample_val is None:
                 continue
+            if fname == "sample_height_mm" and eq_limit in (None, ""):
+                continue
             if eq_limit in (None, ""):
                 reasons.append(f"{EQUIPMENT_DIMENSION_LABELS[fname]}/缺失")
             elif float(sample_val) > float(eq_limit):
