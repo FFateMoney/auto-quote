@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -145,9 +145,17 @@ def update_test_type_aliases(test_type_id: int, request: TestTypeAliasesUpdateRe
 
 
 @router.post("/api/runs")
-async def create_run(files: list[UploadFile] = File(...)):
+async def create_run(files: list[UploadFile] = File(...), quote_mode: str = Form("single")):
     if not files:
         raise HTTPException(status_code=400, detail="missing_files")
+    if quote_mode not in {"single", "batch"}:
+        raise HTTPException(status_code=400, detail="invalid_quote_mode")
+    if quote_mode == "batch":
+        if len(files) != 1:
+            raise HTTPException(status_code=400, detail="batch_requires_single_excel")
+        suffix = Path(files[0].filename or "").suffix.lower()
+        if suffix != ".xlsx":
+            raise HTTPException(status_code=400, detail="batch_requires_xlsx")
 
     settings = get_settings()
     run_id = _build_run_id(files[0].filename or "")
@@ -159,7 +167,10 @@ async def create_run(files: list[UploadFile] = File(...)):
         safe_name = Path(file.filename or f"upload-{index}").name
         stored_name = f"{index:02d}_{safe_name}"
         stored_path = uploaded_dir / stored_name
-        stored_path.write_bytes(await file.read())
+        content = await file.read()
+        if quote_mode == "batch" and not content:
+            raise HTTPException(status_code=400, detail="empty_batch_file")
+        stored_path.write_bytes(content)
         uploaded_documents.append(
             UploadedDocument(
                 document_id=f"upload-{index}",
@@ -169,7 +180,7 @@ async def create_run(files: list[UploadFile] = File(...)):
                 local_path=str(stored_path),
             )
         )
-    return get_orchestrator().run(run_id=run_id, uploaded_documents=uploaded_documents).model_dump()
+    return get_orchestrator().run(run_id=run_id, uploaded_documents=uploaded_documents, quote_mode=quote_mode).model_dump()
 
 
 @router.post("/api/runs/text")
@@ -231,6 +242,10 @@ def export_run(run_id: str):
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        if str(exc) == "no_quoted_items_to_export":
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Export failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

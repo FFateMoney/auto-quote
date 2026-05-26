@@ -68,9 +68,12 @@ export async function logout(): Promise<void> {
   }
 }
 
-export async function createRun(files: File[]): Promise<RunState> {
+export type QuoteMode = 'single' | 'batch';
+
+export async function createRun(files: File[], quoteMode: QuoteMode = 'single'): Promise<RunState> {
   const formData = new FormData();
   files.forEach((file) => formData.append('files', file));
+  formData.append('quote_mode', quoteMode);
   const response = await fetchWithTimeout(
     `${API_BASE}/runs`,
     {

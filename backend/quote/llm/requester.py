@@ -4,13 +4,14 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
 from backend.common.logging import append_run_log
-from backend.common.models import NormalizedDocument
+from backend.common.models import NormalizedDocument, NormalizedTextBlock
 from backend.quote.models import ExtraStandardRequirement, FormRow, StandardContextDecision, StandardEvidence
 from backend.quote.settings import get_settings
 
@@ -159,6 +160,22 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class ModelFillResult:
     items: list[FormRow]
+    summary: str = ""
+    raw_response: str = ""
+
+
+@dataclass(slots=True)
+class BatchQuoteSplitItem:
+    quote_id: str
+    title: str
+    source_summary: str
+    text: str
+    block_ids: list[str]
+
+
+@dataclass(slots=True)
+class BatchQuoteSplitResult:
+    items: list[BatchQuoteSplitItem]
     summary: str = ""
     raw_response: str = ""
 
@@ -314,8 +331,89 @@ class QwenRequester:
             current_rows=None,
             visible_fields=DOCUMENT_EXTRACT_VISIBLE_FIELDS,
         )
-        content = self._stream_text(messages, run_dir=run_dir, request_name="文档抽取")
-        return self._parse_form_result(content)
+        content = self._stream_text(messages, run_dir=run_dir, request_name="文档抽取", max_tokens=12000)
+        try:
+            return self._parse_form_result(content)
+        except json.JSONDecodeError:
+            self._save_bad_json_response(content, run_dir=run_dir, prefix="document_extract")
+            raise
+
+    def split_batch_excel(self, document: NormalizedDocument, *, run_dir: Path | None = None) -> BatchQuoteSplitResult:
+        prompt = self.prompts["batch_excel_split"]
+        schema_json = json.dumps(
+            {
+                "items": [
+                    {
+                        "quote_id": "quote_1",
+                        "title": "报价需求1",
+                        "source_summary": "来源工作表/行号/识别依据",
+                        "block_ids": ["Sheet1-row-2", "Sheet1-row-3"],
+                    }
+                ],
+                "summary": "拆分摘要",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        user_text = (
+            str(prompt["user"])
+            .replace("$document_manifest", self._document_manifest([document]))
+            .replace("$document_text", self._batch_split_document_text(document))
+            .replace("$schema_json", schema_json)
+        )
+        content = [{"type": "text", "text": user_text}]
+        messages = [{"role": "system", "content": str(prompt["system"])}, {"role": "user", "content": content}]
+        text = self._stream_text(messages, run_dir=run_dir, request_name="批量Excel拆分", max_tokens=8000)
+        try:
+            result = self._parse_batch_split_result(text)
+        except json.JSONDecodeError:
+            if run_dir is not None:
+                (run_dir / "batch_split_raw_response.txt").write_text(text, encoding="utf-8")
+            logger.exception("批量Excel拆分响应不是合法JSON，降级为整份Excel单子报价")
+            result = BatchQuoteSplitResult(items=[], summary="批量拆分响应解析失败，按整份 Excel 作为一个报价需求处理", raw_response=text)
+        if not result.items:
+            result.items.append(
+                BatchQuoteSplitItem(
+                    quote_id="quote_1",
+                    title=document.source_name or "报价需求1",
+                    source_summary="模型未拆分出子报价，按整份 Excel 作为一个报价需求处理",
+                    text="",
+                    block_ids=[block.block_id for block in document.text_blocks],
+                )
+            )
+        return result
+
+    def document_from_batch_item(self, source: NormalizedDocument, item: BatchQuoteSplitItem) -> NormalizedDocument:
+        blocks_by_id = {block.block_id: block for block in source.text_blocks}
+        selected_blocks = [blocks_by_id[block_id] for block_id in item.block_ids if block_id in blocks_by_id]
+        if selected_blocks:
+            text_blocks = [
+                NormalizedTextBlock(
+                    block_id=f"{item.quote_id}-{block.block_id}",
+                    block_type=block.block_type,
+                    text=block.text,
+                    source_path=block.source_path,
+                )
+                for block in selected_blocks
+            ]
+        else:
+            text_blocks = [
+                NormalizedTextBlock(
+                    block_id=f"{item.quote_id}-batch-split",
+                    block_type="BatchQuote",
+                    text=item.text or self._document_text([source]),
+                    source_path=item.source_summary,
+                )
+            ]
+        return NormalizedDocument(
+            document_id=item.quote_id,
+            source_name=item.title or item.quote_id,
+            source_kind="batch_excel_quote",
+            original_path=source.original_path,
+            text_blocks=text_blocks,
+            assets=source.assets,
+            metadata={**source.metadata, "batch_quote_id": item.quote_id, "batch_source_summary": item.source_summary},
+        )
 
     def enrich_form_with_evidences(
         self,
@@ -334,8 +432,12 @@ class QwenRequester:
             target_fields_by_row=target_fields_by_row or {},
             visible_fields=STANDARD_ENRICH_VISIBLE_FIELDS,
         )
-        content = self._stream_text(messages, run_dir=run_dir, request_name="标准证据补表")
-        return self._parse_form_result(content)
+        content = self._stream_text(messages, run_dir=run_dir, request_name="标准证据补表", max_tokens=8000)
+        try:
+            return self._parse_form_result(content)
+        except json.JSONDecodeError:
+            self._save_bad_json_response(content, run_dir=run_dir, prefix="standard_enrich")
+            raise
 
     def discover_standard_fields(
         self,
@@ -528,6 +630,15 @@ class QwenRequester:
             sections.append("\n".join(section).strip())
         return "\n\n".join(sections).strip()
 
+    def _batch_split_document_text(self, document: NormalizedDocument) -> str:
+        sections: list[str] = []
+        for block in document.text_blocks:
+            text = block.text.strip()
+            if not text:
+                continue
+            sections.append(f"### block_id={block.block_id} | source={block.source_path or '-'}\n{text}")
+        return "\n\n".join(sections).strip()
+
     def _rows_for_model(self, rows: list[FormRow], visible_fields: tuple[str, ...]) -> dict[str, Any]:
         return {"items": [{field: getattr(row, field) for field in visible_fields} for row in rows]}
 
@@ -579,7 +690,7 @@ class QwenRequester:
             evidence.text.strip() or "(空)",
         ]
 
-    def _stream_text(self, messages: list[dict[str, Any]], *, run_dir: Path | None, request_name: str) -> str:
+    def _stream_text(self, messages: list[dict[str, Any]], *, run_dir: Path | None, request_name: str, max_tokens: int = 4000) -> str:
         user_content = messages[1]["content"]
         image_count = sum(1 for item in user_content if item.get("type") == "image_url")
         text_length = len(str(user_content[-1].get("text") or "")) if user_content else 0
@@ -590,7 +701,7 @@ class QwenRequester:
             model=self.model,
             messages=messages,
             temperature=0.1,
-            max_tokens=4000,
+            max_tokens=max_tokens,
             modalities=["text"],
             stream=True,
             stream_options={"include_usage": True},
@@ -619,6 +730,13 @@ class QwenRequester:
             append_run_log(run_dir, f"模型请求成功: {request_name} | chunks={chunk_count} | response_chars={len(text)}")
         return text
 
+    def _save_bad_json_response(self, content: str, *, run_dir: Path | None, prefix: str) -> None:
+        if run_dir is None:
+            return
+        filename = f"{prefix}_bad_json_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+        (run_dir / filename).write_text(content, encoding="utf-8")
+        append_run_log(run_dir, f"模型JSON解析失败，原始响应已保存: {filename}")
+
     def _parse_form_result(self, content: str) -> ModelFillResult:
         payload = json.loads(_extract_json_text(content))
         if isinstance(payload, list):
@@ -634,6 +752,33 @@ class QwenRequester:
             items.append(FormRow.model_validate(_normalize_item_payload(item)))
         logger.info("模型响应解析完成: rows=%s summary=%s", len(items), summary or "-")
         return ModelFillResult(items=items, summary=summary, raw_response=content)
+
+    def _parse_batch_split_result(self, content: str) -> BatchQuoteSplitResult:
+        payload = json.loads(_extract_json_text(content))
+        if isinstance(payload, list):
+            raw_items, summary = payload, ""
+        elif isinstance(payload, dict):
+            raw_items = payload.get("items") or []
+            summary = str(payload.get("summary") or "").strip()
+        else:
+            raw_items, summary = [], ""
+
+        items: list[BatchQuoteSplitItem] = []
+        used_ids: set[str] = set()
+        for index, raw in enumerate(raw_items, start=1):
+            if not isinstance(raw, dict):
+                continue
+            quote_id = _normalize_quote_id(str(raw.get("quote_id") or ""), index, used_ids)
+            title = str(raw.get("title") or f"报价需求{index}").strip() or f"报价需求{index}"
+            source_summary = str(raw.get("source_summary") or "").strip()
+            text = str(raw.get("text") or "").strip()
+            block_ids = _normalize_string_list(raw.get("block_ids") or raw.get("source_block_ids"))
+            if not text and not block_ids:
+                continue
+            used_ids.add(quote_id)
+            items.append(BatchQuoteSplitItem(quote_id=quote_id, title=title, source_summary=source_summary, text=text, block_ids=block_ids))
+        logger.info("批量Excel拆分解析完成: quotes=%s summary=%s", len(items), summary or "-")
+        return BatchQuoteSplitResult(items=items, summary=summary, raw_response=content)
 
     def _parse_standard_context_decision(self, content: str) -> StandardContextDecision:
         payload = json.loads(_extract_json_text(content))
@@ -712,3 +857,30 @@ def _normalize_extra_requirements(value: Any) -> list[ExtraStandardRequirement]:
         seen.add(key)
         items.append(model)
     return items
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_values = [str(item).strip() for item in value]
+    elif isinstance(value, str):
+        raw_values = [part.strip() for part in re.split(r"[,，;\n]+", value) if part.strip()]
+    else:
+        raw_values = []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _normalize_quote_id(value: str, index: int, used_ids: set[str]) -> str:
+    candidate = re.sub(r"[^a-zA-Z0-9_-]+", "_", value.strip()) or f"quote_{index}"
+    candidate = candidate.strip("_-") or f"quote_{index}"
+    if candidate not in used_ids:
+        return candidate
+    suffix = 2
+    while f"{candidate}_{suffix}" in used_ids:
+        suffix += 1
+    return f"{candidate}_{suffix}"

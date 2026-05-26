@@ -44,6 +44,8 @@ export type ExtraStandardRequirement = {
 
 export type FormRow = {
   row_id: string;
+  quote_id: string;
+  quote_title: string;
   raw_test_type: string;
   canonical_test_type: string;
   standard_codes: string[];
@@ -120,11 +122,23 @@ export type RunArtifacts = {
   exported_files: string[];
 };
 
+export type BatchQuoteItem = {
+  quote_id: string;
+  title: string;
+  source_summary: string;
+  status: "running" | "waiting_manual_input" | "completed" | "failed";
+  errors: string[];
+  form_stages: FormStageSnapshot[];
+  final_form_items: FormRow[];
+};
+
 export type RunState = {
   run_id: string;
+  quote_mode: "single" | "batch";
   current_stage: string;
   overall_status: "running" | "waiting_manual_input" | "completed" | "failed";
   uploaded_documents: UploadedDocument[];
+  batch_quotes: BatchQuoteItem[];
   form_stages: FormStageSnapshot[];
   final_form_items: FormRow[];
   next_action: string;

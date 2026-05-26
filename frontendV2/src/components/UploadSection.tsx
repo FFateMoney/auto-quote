@@ -6,25 +6,29 @@
 import React from 'react';
 import {CheckCircle2, FileText, Loader2, Upload, X} from 'lucide-react';
 import {motion} from 'motion/react';
+import type {QuoteMode} from '../api';
 
 interface UploadSectionProps {
   error: string;
   isSubmitting: boolean;
-  onStart: (files: File[]) => void;
+  onStart: (files: File[], quoteMode: QuoteMode) => void;
   onStartFromText: (text: string) => void;
 }
 
 const ACCEPTED_FILES = '.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.bmp,.webp';
+const BATCH_ACCEPTED_FILES = '.xlsx';
 type InputMode = 'file' | 'text';
 
 export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting, onStart, onStartFromText}) => {
+  const [quoteMode, setQuoteMode] = React.useState<QuoteMode>('single');
   const [inputMode, setInputMode] = React.useState<InputMode>('file');
   const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
   const [plainText, setPlainText] = React.useState('');
   const trimmedText = plainText.trim();
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setSelectedFiles(Array.from(event.target.files ?? []));
+    const files = Array.from(event.target.files ?? []);
+    setSelectedFiles(quoteMode === 'batch' ? files.slice(0, 1) : files);
   };
 
   const removeFile = (fileName: string) => {
@@ -49,26 +53,52 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
         <div className="mb-5 grid grid-cols-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
           <button
             type="button"
-            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${inputMode === 'file' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            onClick={() => setInputMode('file')}
+            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${quoteMode === 'single' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            onClick={() => {
+              setQuoteMode('single');
+              setSelectedFiles([]);
+            }}
           >
-            上传文件
+            单项报价
           </button>
           <button
             type="button"
-            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${inputMode === 'text' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            onClick={() => setInputMode('text')}
+            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${quoteMode === 'batch' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            onClick={() => {
+              setQuoteMode('batch');
+              setInputMode('file');
+              setSelectedFiles([]);
+            }}
           >
-            粘贴文本
+            批量报价
           </button>
         </div>
+
+        {quoteMode === 'single' ? (
+          <div className="mb-5 grid grid-cols-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
+            <button
+              type="button"
+              className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${inputMode === 'file' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              onClick={() => setInputMode('file')}
+            >
+              上传文件
+            </button>
+            <button
+              type="button"
+              className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${inputMode === 'text' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              onClick={() => setInputMode('text')}
+            >
+              粘贴文本
+            </button>
+          </div>
+        ) : null}
 
         {inputMode === 'file' ? (
           <div className="relative group cursor-pointer">
             <input
               type="file"
-              accept={ACCEPTED_FILES}
-              multiple
+              accept={quoteMode === 'batch' ? BATCH_ACCEPTED_FILES : ACCEPTED_FILES}
+              multiple={quoteMode === 'single'}
               onChange={handleFileChange}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
             />
@@ -96,7 +126,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
                 </div>
               ) : (
                 <div className="text-slate-400">
-                  拖拽文件到此处 或 <span className="text-indigo-600 font-medium">点击选择</span>
+                  {quoteMode === 'batch' ? '请选择 1 个 Excel 批量报价文件' : '拖拽文件到此处 或 '}<span className="text-indigo-600 font-medium">点击选择</span>
                 </div>
               )}
             </div>
@@ -117,8 +147,8 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
 
         <button
           type="button"
-          onClick={() => inputMode === 'file' ? onStart(selectedFiles) : onStartFromText(trimmedText)}
-          disabled={(inputMode === 'file' ? selectedFiles.length === 0 : trimmedText.length === 0 || trimmedText.length > 100_000) || isSubmitting}
+          onClick={() => inputMode === 'file' ? onStart(selectedFiles, quoteMode) : onStartFromText(trimmedText)}
+          disabled={(inputMode === 'file' ? selectedFiles.length === 0 || (quoteMode === 'batch' && selectedFiles[0]?.name.toLowerCase().endsWith('.xlsx') !== true) : trimmedText.length === 0 || trimmedText.length > 100_000) || isSubmitting}
           className="btn-primary w-full mt-8 disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
         >
           {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}

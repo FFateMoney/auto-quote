@@ -12,7 +12,7 @@ from backend.quote.catalog import CatalogGateway
 from backend.quote.form_ops import apply_manual_values
 from backend.quote.kernel import Kernel
 from backend.quote.llm.requester import QwenRequester
-from backend.quote.models import FormRow, FormStageSnapshot, ResumeRequest, RunArtifacts, RunState, UploadedDocument
+from backend.quote.models import BatchQuoteItem, FormRow, FormStageSnapshot, ResumeRequest, RunArtifacts, RunState, UploadedDocument
 from backend.quote.plugins.registry import PluginRegistry
 from backend.quote.quoter import Quoter
 from backend.quote.run_store import RunStore
@@ -56,7 +56,7 @@ class QuoteOrchestrator:
     # Public
     # ------------------------------------------------------------------
 
-    def run(self, *, run_id: str, uploaded_documents: list[UploadedDocument]) -> RunState:
+    def run(self, *, run_id: str, uploaded_documents: list[UploadedDocument], quote_mode: str = "single") -> RunState:
         from backend.quote.settings import get_settings
         run_dir = get_settings().run_dir / run_id
         run_state_path = run_dir / "run_state.json"
@@ -64,6 +64,7 @@ class QuoteOrchestrator:
 
         state = RunState(
             run_id=run_id,
+            quote_mode="batch" if quote_mode == "batch" else "single",
             overall_status="running",
             uploaded_documents=[d.model_copy(deep=True) for d in uploaded_documents],
             artifacts=RunArtifacts(
@@ -77,45 +78,20 @@ class QuoteOrchestrator:
         try:
             documents, preprocess_notes = self._preprocess(state, run_dir)
             self._log(run_dir, "文档解析完成，共 %s 份", len(documents))
-
-            extraction = self.requester.extract_form(documents, run_dir=run_dir)
-            rows = extraction.items
-            notes = list(preprocess_notes)
-            if extraction.summary:
-                notes.append(f"模型摘要：{extraction.summary}")
-            self._upsert(state, DOCUMENT_EXTRACTED, rows, notes)
-            self._log(run_dir, "文件抽取完成，共 %s 行", len(rows))
-            self._save(run_state_path, state)
-
-            rows, notes = self.kernel.match_test_types(rows)
-            self._upsert(state, TEST_TYPE_MATCHED, rows, notes)
-            self._log(run_dir, "试验类型匹配完成，共 %s 行", len(rows))
-            self._save(run_state_path, state)
-
-            rows, planning_notes = self.quoter.plan_standard_fields(rows)
-            rows, notes = self.quoter.select_equipment(rows)
-            self._upsert(state, EQUIPMENT_SELECTED_INITIAL, rows, [*planning_notes, *notes])
-            self._log(run_dir, "设备筛选完成，共 %s 行", len(rows))
-            self._save(run_state_path, state)
-
-            rows = self._standard_stage(state, rows, run_dir)
-            self._log(run_dir, "标准补充完成，共 %s 行", len(rows))
-            self._save(run_state_path, state)
-
-            rows, notes = self.quoter.select_equipment(rows)
-            rows, repeat_notes = self.quoter.assign_repeat_counts(rows)
-            self._upsert(state, EQUIPMENT_SELECTED_ENRICHED, rows, ["标准补充后重新筛选设备", *notes, *repeat_notes])
-            self._log(run_dir, "标准补充后设备筛选完成，共 %s 行", len(rows))
-            self._save(run_state_path, state)
-
-            rows, notes, status = self.quoter.price(rows)
-            self._upsert(state, FINAL_QUOTED, rows, notes)
-            state.final_form_items = _copy(rows)
-            state.current_stage = FINAL_QUOTED
-            state.overall_status = status
-            state.next_action = self._next_action(status)
-            self._log(run_dir, "最终报价完成，状态=%s，行数=%s", status, len(rows))
-            self._save(run_state_path, state)
+            if state.quote_mode == "batch":
+                self._run_batch_pipeline(state, documents, preprocess_notes, run_dir, run_state_path)
+            else:
+                status = self._run_document_pipeline(
+                    owner=state,
+                    documents=documents,
+                    run_dir=run_dir,
+                    initial_notes=preprocess_notes,
+                    save_path=run_state_path,
+                    state=state,
+                )
+                state.overall_status = status
+                state.next_action = self._next_action(status)
+                self._save(run_state_path, state)
         except Exception as exc:
             state.overall_status = "failed"
             state.errors.append(str(exc))
@@ -132,40 +108,26 @@ class QuoteOrchestrator:
         state = self.store.load(run_state_path)
         self._log(run_dir, "收到人工补录继续报价请求: row_id=%s", request.row_id)
 
-        test_type_changed = "canonical_test_type" in request.field_values
-        base_rows = state.final_form_items or self._stage_rows(state, FINAL_QUOTED)
-        if not test_type_changed:
-            base_rows = self._stage_rows(state, STANDARD_ENRICHED) or base_rows
-        rows = apply_manual_values(base_rows, request.row_id, request.field_values)
+        if state.quote_mode == "batch":
+            quote = self._find_batch_quote_for_row(state, request.row_id)
+            if quote is None:
+                raise RuntimeError(f"batch_quote_row_not_found:{request.row_id}")
+            try:
+                quote.status = self._resume_rows(owner=quote, run_dir=run_dir, request=request)
+                quote.errors = []
+                self._refresh_batch_summary(state)
+                self._save(run_state_path, state)
+            except Exception as exc:
+                quote.status = "failed"
+                quote.errors.append(str(exc))
+                self._refresh_batch_summary(state)
+                self._log(run_dir, "批量子报价人工补录后重新报价失败: quote_id=%s err=%s", quote.quote_id, str(exc), level=logging.ERROR)
+                self._save(run_state_path, state)
+            return state
+
         try:
-            if test_type_changed:
-                rows, notes = self.kernel.match_test_types(rows)
-                self._upsert(state, TEST_TYPE_MATCHED, rows, ["用户补录后重新匹配试验类型", *notes])
-
-                rows, planning_notes = self.quoter.plan_standard_fields(rows)
-                rows, notes = self.quoter.select_equipment(rows)
-                self._upsert(state, EQUIPMENT_SELECTED_INITIAL, rows, ["用户补录后重新筛选设备", *planning_notes, *notes])
-
-                rows = self._standard_stage(state, rows, run_dir)
-            else:
-                rows = self._clear_equipment_state(rows)
-                self._upsert(
-                    state,
-                    STANDARD_ENRICHED,
-                    rows,
-                    ["用户补录未修改标准试验类型，复用已有标准补充结果，跳过标准文档检索"],
-                )
-
-            rows, notes = self.quoter.select_equipment(rows)
-            rows, repeat_notes = self.quoter.assign_repeat_counts(rows)
-            self._upsert(state, EQUIPMENT_SELECTED_ENRICHED, rows, ["标准补充后重新筛选设备", *notes, *repeat_notes])
-
-            rows, notes, status = self.quoter.price(rows)
-            self._upsert(state, FINAL_QUOTED, rows, ["用户补录后重新报价", *notes])
-            state.final_form_items = _copy(rows)
-            state.current_stage = FINAL_QUOTED
-            state.overall_status = status
-            state.next_action = self._next_action(status)
+            state.overall_status = self._resume_rows(owner=state, run_dir=run_dir, request=request)
+            state.next_action = self._next_action(state.overall_status)
             self._save(run_state_path, state)
         except Exception as exc:
             state.overall_status = "failed"
@@ -175,6 +137,41 @@ class QuoteOrchestrator:
             self._save(run_state_path, state)
 
         return state
+
+    def _resume_rows(self, *, owner: RunState | BatchQuoteItem, run_dir: Path, request: ResumeRequest) -> str:
+        test_type_changed = "canonical_test_type" in request.field_values
+        base_rows = owner.final_form_items or self._stage_rows(owner, FINAL_QUOTED)
+        if not test_type_changed:
+            base_rows = self._stage_rows(owner, STANDARD_ENRICHED) or base_rows
+        rows = apply_manual_values(base_rows, request.row_id, request.field_values)
+        if test_type_changed:
+            rows, notes = self.kernel.match_test_types(rows)
+            self._upsert(owner, TEST_TYPE_MATCHED, rows, ["用户补录后重新匹配试验类型", *notes])
+
+            rows, planning_notes = self.quoter.plan_standard_fields(rows)
+            rows, notes = self.quoter.select_equipment(rows)
+            self._upsert(owner, EQUIPMENT_SELECTED_INITIAL, rows, ["用户补录后重新筛选设备", *planning_notes, *notes])
+
+            rows = self._standard_stage(owner, rows, run_dir)
+        else:
+            rows = self._clear_equipment_state(rows)
+            self._upsert(
+                owner,
+                STANDARD_ENRICHED,
+                rows,
+                ["用户补录未修改标准试验类型，复用已有标准补充结果，跳过标准文档检索"],
+            )
+
+        rows, notes = self.quoter.select_equipment(rows)
+        rows, repeat_notes = self.quoter.assign_repeat_counts(rows)
+        self._upsert(owner, EQUIPMENT_SELECTED_ENRICHED, rows, ["标准补充后重新筛选设备", *notes, *repeat_notes])
+
+        rows, notes, status = self.quoter.price(rows)
+        self._upsert(owner, FINAL_QUOTED, rows, ["用户补录后重新报价", *notes])
+        owner.final_form_items = _copy(rows)
+        if isinstance(owner, RunState):
+            owner.current_stage = FINAL_QUOTED
+        return status
 
     def load_run(self, run_id: str) -> RunState:
         from backend.quote.settings import get_settings
@@ -198,7 +195,111 @@ class QuoteOrchestrator:
             notes.append(f"{uploaded.file_name}: routed to {plugin.plugin_id}")
         return documents, notes
 
-    def _standard_stage(self, state: RunState, rows: list[FormRow], run_dir: Path) -> list[FormRow]:
+    def _run_batch_pipeline(
+        self,
+        state: RunState,
+        documents: list,
+        preprocess_notes: list[str],
+        run_dir: Path,
+        run_state_path: Path,
+    ) -> None:
+        if len(documents) != 1 or documents[0].source_kind != "excel":
+            raise RuntimeError("batch_mode_requires_single_excel")
+        split = self.requester.split_batch_excel(documents[0], run_dir=run_dir)
+        notes = list(preprocess_notes)
+        if split.summary:
+            notes.append(f"批量拆分摘要：{split.summary}")
+        state.batch_quotes = [
+            BatchQuoteItem(quote_id=item.quote_id, title=item.title, source_summary=item.source_summary)
+            for item in split.items
+        ]
+        self._log(run_dir, "批量Excel拆分完成，共 %s 个子报价", len(state.batch_quotes))
+        self._save(run_state_path, state)
+
+        for split_item, quote in zip(split.items, state.batch_quotes, strict=False):
+            quote.status = "running"
+            self._save(run_state_path, state)
+            try:
+                quote_doc = self.requester.document_from_batch_item(documents[0], split_item)
+                quote.status = self._run_document_pipeline(
+                    owner=quote,
+                    documents=[quote_doc],
+                    run_dir=run_dir,
+                    initial_notes=[*notes, f"子报价：{quote.title}", f"来源：{quote.source_summary}"],
+                    quote_id=quote.quote_id,
+                    quote_title=quote.title,
+                    save_path=run_state_path,
+                    state=state,
+                )
+                quote.errors = []
+                self._log(run_dir, "批量子报价完成: quote_id=%s status=%s rows=%s", quote.quote_id, quote.status, len(quote.final_form_items))
+            except Exception as exc:
+                quote.status = "failed"
+                quote.errors.append(str(exc))
+                self._log(run_dir, "批量子报价失败: quote_id=%s err=%s", quote.quote_id, str(exc), level=logging.ERROR)
+            self._refresh_batch_summary(state)
+            self._save(run_state_path, state)
+
+        self._refresh_batch_summary(state)
+        self._save(run_state_path, state)
+
+    def _run_document_pipeline(
+        self,
+        *,
+        owner: RunState | BatchQuoteItem,
+        documents: list,
+        run_dir: Path,
+        initial_notes: list[str],
+        quote_id: str = "",
+        quote_title: str = "",
+        save_path: Path | None = None,
+        state: RunState | None = None,
+    ) -> str:
+        extraction = self.requester.extract_form(documents, run_dir=run_dir)
+        rows = self._stamp_rows(extraction.items, quote_id=quote_id, quote_title=quote_title)
+        notes = list(initial_notes)
+        if extraction.summary:
+            notes.append(f"模型摘要：{extraction.summary}")
+        self._upsert(owner, DOCUMENT_EXTRACTED, rows, notes)
+        self._log(run_dir, "文件抽取完成，共 %s 行", len(rows))
+        self._maybe_save(save_path, state)
+
+        rows, notes = self.kernel.match_test_types(rows)
+        rows = self._stamp_rows(rows, quote_id=quote_id, quote_title=quote_title)
+        self._upsert(owner, TEST_TYPE_MATCHED, rows, notes)
+        self._log(run_dir, "试验类型匹配完成，共 %s 行", len(rows))
+        self._maybe_save(save_path, state)
+
+        rows, planning_notes = self.quoter.plan_standard_fields(rows)
+        rows, notes = self.quoter.select_equipment(rows)
+        rows = self._stamp_rows(rows, quote_id=quote_id, quote_title=quote_title)
+        self._upsert(owner, EQUIPMENT_SELECTED_INITIAL, rows, [*planning_notes, *notes])
+        self._log(run_dir, "设备筛选完成，共 %s 行", len(rows))
+        self._maybe_save(save_path, state)
+
+        rows = self._standard_stage(owner, rows, run_dir)
+        rows = self._stamp_rows(rows, quote_id=quote_id, quote_title=quote_title)
+        self._log(run_dir, "标准补充完成，共 %s 行", len(rows))
+        self._maybe_save(save_path, state)
+
+        rows, notes = self.quoter.select_equipment(rows)
+        rows, repeat_notes = self.quoter.assign_repeat_counts(rows)
+        rows = self._stamp_rows(rows, quote_id=quote_id, quote_title=quote_title)
+        self._upsert(owner, EQUIPMENT_SELECTED_ENRICHED, rows, ["标准补充后重新筛选设备", *notes, *repeat_notes])
+        self._log(run_dir, "标准补充后设备筛选完成，共 %s 行", len(rows))
+        self._maybe_save(save_path, state)
+
+        rows, notes, status = self.quoter.price(rows)
+        rows = self._stamp_rows(rows, quote_id=quote_id, quote_title=quote_title)
+        self._upsert(owner, FINAL_QUOTED, rows, notes)
+        owner.final_form_items = _copy(rows)
+        if isinstance(owner, RunState):
+            owner.current_stage = FINAL_QUOTED
+        self._log(run_dir, "最终报价完成，状态=%s，行数=%s", status, len(rows))
+        self._maybe_save(save_path, state)
+        return status
+
+    def _standard_stage(self, owner: RunState | BatchQuoteItem, rows: list[FormRow], run_dir: Path) -> list[FormRow]:
         rows = self._clear_standard_discovery_state(rows)
         target_by_row = {
             row.row_id: list(row.planned_standard_fields)
@@ -207,7 +308,7 @@ class QuoteOrchestrator:
         }
         if not target_by_row:
             rows = self._clear_equipment_state(rows)
-            self._upsert(state, STANDARD_ENRICHED, rows, ["无标准补充模板字段或缺少标准号，跳过标准补充"])
+            self._upsert(owner, STANDARD_ENRICHED, rows, ["无标准补充模板字段或缺少标准号，跳过标准补充"])
             return rows
 
         rows, evidence_notes = self.kernel.resolve_standard_evidences(rows, target_fields_by_row=target_by_row, run_dir=run_dir)
@@ -250,7 +351,7 @@ class QuoteOrchestrator:
             notes.append("未命中有效标准证据，按当前信息继续报价")
 
         rows = self._clear_equipment_state(rows)
-        self._upsert(state, STANDARD_ENRICHED, rows, notes)
+        self._upsert(owner, STANDARD_ENRICHED, rows, notes)
         return rows
 
     def _apply_standard_discovery(
@@ -311,23 +412,77 @@ class QuoteOrchestrator:
                 notes.append(f"{label}: 记录额外标准要求 {len(item.extra_standard_requirements)} 条")
         return notes
 
-    def _upsert(self, state: RunState, stage_id: str, rows: list[FormRow], notes: list[str]) -> None:
+    def _stamp_rows(self, rows: list[FormRow], *, quote_id: str, quote_title: str) -> list[FormRow]:
+        if not quote_id and not quote_title:
+            return _copy(rows)
+        updated: list[FormRow] = []
+        for row in rows:
+            copy = row.model_copy(deep=True)
+            copy.quote_id = quote_id
+            copy.quote_title = quote_title
+            updated.append(copy)
+        return updated
+
+    def _maybe_save(self, save_path: Path | None, state: RunState | None) -> None:
+        if save_path is not None and state is not None:
+            self._save(save_path, state)
+
+    def _refresh_batch_summary(self, state: RunState) -> None:
+        state.final_form_items = [row.model_copy(deep=True) for quote in state.batch_quotes for row in quote.final_form_items]
+        state.form_stages = []
+        state.current_stage = FINAL_QUOTED if any(quote.form_stages for quote in state.batch_quotes) else state.current_stage
+        if not state.batch_quotes:
+            state.overall_status = "failed"
+            state.next_action = "批量拆分未得到可报价项目"
+            return
+        statuses = [quote.status for quote in state.batch_quotes]
+        if any(status == "running" for status in statuses):
+            state.overall_status = "running"
+        elif all(status == "failed" for status in statuses):
+            state.overall_status = "failed"
+        elif any(status == "waiting_manual_input" for status in statuses):
+            state.overall_status = "waiting_manual_input"
+        elif self._exportable_items(state):
+            state.overall_status = "completed"
+        else:
+            state.overall_status = "failed"
+        state.errors = [f"{quote.title or quote.quote_id}: {'；'.join(quote.errors)}" for quote in state.batch_quotes if quote.errors]
+        state.next_action = self._next_action(state.overall_status)
+
+    def _find_batch_quote_for_row(self, state: RunState, row_id: str) -> BatchQuoteItem | None:
+        for quote in state.batch_quotes:
+            if any(row.row_id == row_id for row in quote.final_form_items):
+                return quote
+            if any(row.row_id == row_id for stage in quote.form_stages for row in stage.items):
+                return quote
+        return None
+
+    def _exportable_items(self, state: RunState) -> list[FormRow]:
+        return [
+            row.model_copy(deep=True)
+            for row in state.final_form_items
+            if row.stage_status == "quoted" and row.total_price is not None
+        ]
+
+    def _upsert(self, owner: RunState | BatchQuoteItem, stage_id: str, rows: list[FormRow], notes: list[str]) -> None:
         snapshot = FormStageSnapshot(
             stage_id=stage_id,
             label=STAGE_LABELS[stage_id],
             items=_copy(rows),
             notes=[n for n in notes if n],
         )
-        for i, stage in enumerate(state.form_stages):
+        for i, stage in enumerate(owner.form_stages):
             if stage.stage_id == stage_id:
-                state.form_stages[i] = snapshot
-                state.current_stage = stage_id
+                owner.form_stages[i] = snapshot
+                if isinstance(owner, RunState):
+                    owner.current_stage = stage_id
                 return
-        state.form_stages.append(snapshot)
-        state.current_stage = stage_id
+        owner.form_stages.append(snapshot)
+        if isinstance(owner, RunState):
+            owner.current_stage = stage_id
 
-    def _stage_rows(self, state: RunState, stage_id: str) -> list[FormRow]:
-        for stage in state.form_stages:
+    def _stage_rows(self, owner: RunState | BatchQuoteItem, stage_id: str) -> list[FormRow]:
+        for stage in owner.form_stages:
             if stage.stage_id == stage_id:
                 return _copy(stage.items)
         return []
@@ -335,6 +490,9 @@ class QuoteOrchestrator:
     def export_docx(self, run_id: str) -> Path:
         from backend.quote.settings import get_settings
         state = self.load_run(run_id)
+        export_items = self._exportable_items(state)
+        if not export_items:
+            raise RuntimeError("no_quoted_items_to_export")
         settings = get_settings()
         template_path = PROJECT_ROOT / "doc" / "quote_tep.docx"
         if not template_path.exists():
@@ -356,7 +514,7 @@ class QuoteOrchestrator:
                     break
             
             if start_row_idx != -1:
-                items = state.final_form_items
+                items = export_items
                 
                 # 识别模板中现有的数字序号行（数据行）
                 data_row_indices = []
@@ -371,8 +529,6 @@ class QuoteOrchestrator:
                 
                 # 如果实际项目数多于模板预设行数，在总计行之前插入新行
                 if len(items) > len(data_row_indices):
-                    # 如果没有找到总计行，就在末尾加，否则在总计行之前加
-                    insert_before_idx = total_row_idx if total_row_idx != -1 else len(table.rows)
                     for _ in range(len(items) - len(data_row_indices)):
                         # 注意：python-docx 的 add_row 总是加在末尾
                         # 如果需要插入，逻辑会复杂些，这里简单处理：先加行，后面填充时按序号来
@@ -428,7 +584,7 @@ class QuoteOrchestrator:
                         # 注1: 样品名 (留空)
                         new_text = cell.text.replace("xxxx", "")
                         # 注3: 项目数量
-                        new_text = new_text.replace("x个测试项目", f"{len(state.final_form_items)}个测试项目")
+                        new_text = new_text.replace("x个测试项目", f"{len(items)}个测试项目")
                         cell.text = new_text
 
         doc.save(output_path)

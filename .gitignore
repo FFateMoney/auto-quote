@@ -38,6 +38,7 @@ backend/dev/config.yaml
 runtime/runs/*
 data/
 qdrant_data/
+test_file/*
 
 # ⚠️  重要：sync_state 文件夹保存流水线同步状态
 # 请勿删除 data/*/sync_state/ 中的内容，否则会导致全量重建或重复入库

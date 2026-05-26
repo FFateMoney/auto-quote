@@ -79,6 +79,8 @@ class ExtraStandardRequirement(BaseModel):
 
 class FormRow(BaseModel):
     row_id: str = Field(default_factory=lambda: uuid4().hex)
+    quote_id: str = ""
+    quote_title: str = ""
     raw_test_type: str = ""
     canonical_test_type: str = ""
     standard_codes: list[str] = Field(default_factory=list)
@@ -202,9 +204,11 @@ class RunArtifacts(BaseModel):
 
 class RunState(BaseModel):
     run_id: str
+    quote_mode: Literal["single", "batch"] = "single"
     current_stage: str = ""
     overall_status: Literal["running", "waiting_manual_input", "completed", "failed"] = "running"
     uploaded_documents: list[UploadedDocument] = Field(default_factory=list)
+    batch_quotes: list["BatchQuoteItem"] = Field(default_factory=list)
     form_stages: list[FormStageSnapshot] = Field(default_factory=list)
     final_form_items: list[FormRow] = Field(default_factory=list)
     next_action: str = ""
@@ -215,6 +219,16 @@ class RunState(BaseModel):
 
     def touch(self) -> None:
         self.updated_at = _now_iso()
+
+
+class BatchQuoteItem(BaseModel):
+    quote_id: str = Field(default_factory=lambda: uuid4().hex)
+    title: str = ""
+    source_summary: str = ""
+    status: Literal["running", "waiting_manual_input", "completed", "failed"] = "running"
+    errors: list[str] = Field(default_factory=list)
+    form_stages: list[FormStageSnapshot] = Field(default_factory=list)
+    final_form_items: list[FormRow] = Field(default_factory=list)
 
 
 class ResumeRequest(BaseModel):

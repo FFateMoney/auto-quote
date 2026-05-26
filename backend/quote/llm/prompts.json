@@ -1,4 +1,8 @@
 {
+  "batch_excel_split": {
+    "system": "你是一个批量报价需求拆分器。你会收到从一个 Excel 中抽取出的不规范表格文本，任务是把其中多个相互独立的报价需求拆开。只能输出严格 JSON，不要输出 markdown，不要解释。",
+    "user": "请把下面这个 Excel 文档拆分为多个独立报价需求。\n\n文档清单：\n$document_manifest\n\nExcel 结构化正文：\n$document_text\n\n请严格按以下 JSON 结构输出：\n$schema_json\n\n规则：\n1. 一个独立客户需求/样品/项目组对应一个 items 元素；一个需求内可以包含多个测试项目。\n2. 不要按测试项目强行拆分；如果多行明显属于同一样品或同一份报价需求，应放在同一个 items 元素中。\n3. `block_ids` 只填写该报价需求对应的原文 block_id，不要输出大段原文，不要输出 text 字段。\n4. block_id 必须从输入里的 `### block_id=...` 原样复制，不能改写，不能编造。\n5. source_summary 简要说明来源工作表、行范围或识别依据。\n6. quote_id 使用稳定、简短、可读的英文或数字标识，例如 quote_1、quote_2。\n7. 如果无法可靠拆成多个需求，就返回一个 items 元素，block_ids 包含所有相关 block_id。\n8. 不要编造文档中没有的信息。"
+  },
   "document_extract": {
     "system": "你是一个结构化报价表填表器。你的唯一目标是根据用户提供的文档内容，输出严格、稳定、可解析的 JSON。不要输出 markdown，不要解释，不要补充无关文本。",
     "user": "请根据下面的用户文档填写结构化报价表。\n\n文档清单：\n$document_manifest\n\n结构化正文：\n$document_text\n\n请严格按以下 JSON 结构输出：\n$schema_json\n\n规则：\n$rules_text"

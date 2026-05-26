@@ -4,15 +4,17 @@
  */
 
 import React from 'react';
-import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, Settings, UploadCloud, X} from 'lucide-react';
+import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, Settings, X} from 'lucide-react';
 import {API_BASE, buildArtifactUrl, createRun, createRunFromText, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage} from './api';
 import logoUrl from './assets/logo_cut.png';
+import smallLogoUrl from './assets/small_logo.png';
 import {EquipmentTables} from './components/EquipmentTables';
 import {StatusDashboard} from './components/StatusDashboard';
 import {StructuredReportGrid} from './components/StructuredReportGrid';
 import {TestTypeAliasManager} from './components/TestTypeAliasManager';
 import {UploadSection} from './components/UploadSection';
-import type {FormStageSnapshot, RunState, UploadedDocument} from './types';
+import type {BatchQuoteItem, FormStageSnapshot, RunState, UploadedDocument} from './types';
+import type {QuoteMode} from './api';
 
 type View = 'upload' | 'dashboard' | 'settings';
 type PreviewKind = 'image' | 'pdf';
@@ -31,6 +33,7 @@ export default function App() {
   const [view, setView] = React.useState<View>('upload');
   const [runState, setRunState] = React.useState<RunState | null>(null);
   const [activeStageId, setActiveStageId] = React.useState('');
+  const [activeQuoteId, setActiveQuoteId] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -73,12 +76,27 @@ export default function App() {
     return () => window.removeEventListener('autoquote:auth-expired', handleAuthExpired);
   }, []);
 
-  const activeStage: FormStageSnapshot | undefined = React.useMemo(() => {
+  const activeBatchQuote: BatchQuoteItem | undefined = React.useMemo(() => {
     if (!runState) {
       return undefined;
     }
-    return runState.form_stages.find((stage) => stage.stage_id === activeStageId) ?? runState.form_stages.at(-1);
-  }, [activeStageId, runState]);
+    if (runState.quote_mode !== 'batch') {
+      return undefined;
+    }
+    return runState.batch_quotes.find((quote) => quote.quote_id === activeQuoteId) ?? runState.batch_quotes[0];
+  }, [activeQuoteId, runState]);
+
+  const visibleStages = activeBatchQuote?.form_stages ?? runState?.form_stages ?? [];
+  const canExport = React.useMemo(() => {
+    if (!runState) {
+      return false;
+    }
+    return runState.final_form_items.some((row) => row.stage_status === 'quoted' && row.total_price != null);
+  }, [runState]);
+
+  const activeStage: FormStageSnapshot | undefined = React.useMemo(() => {
+    return visibleStages.find((stage) => stage.stage_id === activeStageId) ?? visibleStages.at(-1);
+  }, [activeStageId, visibleStages]);
 
   React.useEffect(() => {
     if (!previewDocument && !stageDialogOpen) {
@@ -94,17 +112,30 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [previewDocument, stageDialogOpen]);
 
-  async function handleStart(files: File[]) {
+  function syncActivePointers(next: RunState, preferredStageId = activeStageId, preferredQuoteId = activeQuoteId) {
+    const nextQuote = next.quote_mode === 'batch'
+      ? next.batch_quotes.find((quote) => quote.quote_id === preferredQuoteId) ?? next.batch_quotes[0]
+      : undefined;
+    const stages = nextQuote?.form_stages ?? next.form_stages;
+    setActiveQuoteId(nextQuote?.quote_id ?? '');
+    setActiveStageId(stages.some((stage) => stage.stage_id === preferredStageId) ? preferredStageId : stages.at(-1)?.stage_id ?? next.current_stage);
+  }
+
+  async function handleStart(files: File[], quoteMode: QuoteMode) {
     if (files.length === 0) {
       setError('请先选择至少一个 Word、Excel、PDF 或图片文件。');
+      return;
+    }
+    if (quoteMode === 'batch' && (files.length !== 1 || !files[0].name.toLowerCase().endsWith('.xlsx'))) {
+      setError('批量报价只支持上传 1 个 Excel（.xlsx）文件。');
       return;
     }
     setSubmitting(true);
     setError('');
     try {
-      const next = await createRun(files);
+      const next = await createRun(files, quoteMode);
       setRunState(next);
-      setActiveStageId(next.form_stages.at(-1)?.stage_id ?? next.current_stage);
+      syncActivePointers(next, '', '');
       setView('dashboard');
     } catch (fetchError) {
       setError(toErrorMessage(fetchError, `${API_BASE}/runs 无法创建运行`));
@@ -123,7 +154,7 @@ export default function App() {
     try {
       const next = await createRunFromText(text);
       setRunState(next);
-      setActiveStageId(next.form_stages.at(-1)?.stage_id ?? next.current_stage);
+      syncActivePointers(next, '', '');
       setView('dashboard');
     } catch (fetchError) {
       setError(toErrorMessage(fetchError, `${API_BASE}/runs/text 无法创建运行`));
@@ -141,7 +172,7 @@ export default function App() {
     try {
       const next = await fetchRun(runState.run_id);
       setRunState(next);
-      setActiveStageId((current) => next.form_stages.some((stage) => stage.stage_id === current) ? current : next.form_stages.at(-1)?.stage_id ?? next.current_stage);
+      syncActivePointers(next);
     } catch (fetchError) {
       setError(toErrorMessage(fetchError, '无法刷新当前运行状态'));
     } finally {
@@ -175,7 +206,7 @@ export default function App() {
 
   function handleRunUpdated(next: RunState) {
     setRunState(next);
-    setActiveStageId(next.form_stages.at(-1)?.stage_id ?? next.current_stage);
+    syncActivePointers(next);
   }
 
   function artifactUrl(path: string) {
@@ -244,7 +275,7 @@ export default function App() {
       <aside className="w-16 md:w-20 bg-slate-900 flex flex-col items-center py-8 gap-8 shrink-0">
         <nav className="flex flex-col gap-6 text-slate-500">
           <NavItem
-            icon={UploadCloud}
+            imageSrc={smallLogoUrl}
             active={view === 'upload'}
             onClick={() => {
               setView('upload');
@@ -272,7 +303,7 @@ export default function App() {
           <div className="relative z-10 ml-auto flex items-center gap-3">
             {view === 'dashboard' && runState ? (
               <>
-                <button type="button" onClick={() => void handleExport()} disabled={submitting} className="btn-secondary text-xs flex items-center gap-1.5">
+                <button type="button" onClick={() => void handleExport()} disabled={submitting || !canExport} className="btn-secondary text-xs flex items-center gap-1.5 disabled:opacity-50">
                   <Download className="w-3.5 h-3.5" />
                   导出报价单
                 </button>
@@ -306,7 +337,7 @@ export default function App() {
             <UploadSection
               error={error}
               isSubmitting={submitting}
-              onStart={(files) => void handleStart(files)}
+              onStart={(files, quoteMode) => void handleStart(files, quoteMode)}
               onStartFromText={(text) => void handleStartFromText(text)}
             />
           ) : view === 'settings' ? (
@@ -321,6 +352,16 @@ export default function App() {
                 artifactUrl={artifactUrl}
                 isRefreshing={refreshing}
               />
+              {runState.quote_mode === 'batch' ? (
+                <BatchQuoteSwitcher
+                  quotes={runState.batch_quotes}
+                  activeQuoteId={activeBatchQuote?.quote_id ?? ''}
+                  onSelect={(quote) => {
+                    setActiveQuoteId(quote.quote_id);
+                    setActiveStageId(quote.form_stages.at(-1)?.stage_id ?? '');
+                  }}
+                />
+              ) : null}
               <div className="space-y-4">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-3">
                   <h2 className="text-2xl font-bold text-slate-800">结构化报价报表</h2>
@@ -359,7 +400,7 @@ export default function App() {
             </div>
             <div className="p-4">
               <div className="flex flex-wrap gap-2">
-                {runState.form_stages.map((stage) => (
+                {visibleStages.map((stage) => (
                   <button
                     key={stage.stage_id}
                     type="button"
@@ -415,6 +456,74 @@ export default function App() {
       ) : null}
     </div>
   );
+}
+
+function BatchQuoteSwitcher({
+  quotes,
+  activeQuoteId,
+  onSelect,
+}: {
+  quotes: BatchQuoteItem[];
+  activeQuoteId: string;
+  onSelect: (quote: BatchQuoteItem) => void;
+}) {
+  if (quotes.length === 0) {
+    return null;
+  }
+  return (
+    <div className="glass-panel p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-slate-800">批量报价</h2>
+          <p className="mt-0.5 text-xs text-slate-400">切换查看每个子报价的结构化表格和设备匹配结果。</p>
+        </div>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">
+          {quotes.length} 项
+        </span>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {quotes.map((quote, index) => {
+          const active = quote.quote_id === activeQuoteId;
+          const quotedCount = quote.final_form_items.filter((row) => row.stage_status === 'quoted' && row.total_price != null).length;
+          return (
+            <button
+              key={quote.quote_id}
+              type="button"
+              onClick={() => onSelect(quote)}
+              className={`min-w-56 rounded-lg border px-3 py-2 text-left transition-colors ${active ? 'border-indigo-200 bg-indigo-50 text-indigo-800' : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200'}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-bold">{quote.title || `子报价 ${index + 1}`}</span>
+                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${getQuoteStatusClass(quote.status)}`}>
+                  {quote.status.replace(/_/g, ' ')}
+                </span>
+              </div>
+              <div className="mt-1 truncate text-xs opacity-75">{quote.source_summary || quote.quote_id}</div>
+              <div className="mt-1 text-xs opacity-75">已报价 {quotedCount} / {quote.final_form_items.length}</div>
+            </button>
+          );
+        })}
+      </div>
+      {quotes.some((quote) => quote.errors.length > 0) ? (
+        <div className="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+          {quotes.filter((quote) => quote.errors.length > 0).map((quote) => `${quote.title || quote.quote_id}: ${quote.errors.join('；')}`).join('；')}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function getQuoteStatusClass(status: BatchQuoteItem['status']): string {
+  switch (status) {
+    case 'completed':
+      return 'bg-emerald-100 text-emerald-700';
+    case 'waiting_manual_input':
+      return 'bg-amber-100 text-amber-700';
+    case 'failed':
+      return 'bg-red-100 text-red-700';
+    default:
+      return 'bg-blue-100 text-blue-700';
+  }
 }
 
 function LoginScreen({
@@ -478,11 +587,13 @@ function LoginScreen({
 
 function NavItem({
   icon: Icon,
+  imageSrc,
   active,
   disabled,
   onClick,
 }: {
-  icon: React.ComponentType<{size?: number}>;
+  icon?: React.ComponentType<{size?: number}>;
+  imageSrc?: string;
   active?: boolean;
   disabled?: boolean;
   onClick?: () => void;
@@ -492,9 +603,9 @@ function NavItem({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`p-3 rounded-xl transition-all disabled:cursor-not-allowed disabled:opacity-30 ${active ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/20 scale-110' : 'hover:bg-slate-800 hover:text-slate-300'}`}
+      className={`p-3 rounded-xl transition-all disabled:cursor-not-allowed disabled:opacity-30 ${active ? 'bg-white text-slate-900 shadow-md shadow-slate-950/20 scale-110' : 'hover:bg-slate-800 hover:text-slate-300'}`}
     >
-      <Icon size={20} />
+      {imageSrc ? <img className="h-5 w-5 object-contain" src={imageSrc} alt="" /> : Icon ? <Icon size={20} /> : null}
     </button>
   );
 }
