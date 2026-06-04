@@ -76,6 +76,32 @@ def merge_rows(current: list[FormRow], incoming: list[FormRow]) -> list[FormRow]
     return merged
 
 
+def merge_extra_requirements(
+    current: list[ExtraStandardRequirement],
+    incoming: list[ExtraStandardRequirement],
+) -> list[ExtraStandardRequirement]:
+    result = [item.model_copy(deep=True) for item in current]
+    seen = {
+        (
+            item.requirement_name.strip(),
+            item.requirement_text.strip(),
+            item.source_section.strip(),
+        )
+        for item in result
+    }
+    for item in incoming:
+        key = (
+            item.requirement_name.strip(),
+            item.requirement_text.strip(),
+            item.source_section.strip(),
+        )
+        if key in seen or (not key[0] and not key[1]):
+            continue
+        seen.add(key)
+        result.append(item.model_copy(deep=True))
+    return result
+
+
 def _merge_row(existing: FormRow, incoming: FormRow) -> FormRow:
     data = existing.model_dump()
     inc = incoming.model_dump()
@@ -100,18 +126,13 @@ def _merge_row(existing: FormRow, incoming: FormRow) -> FormRow:
             if nxt_s and nxt_s != cur_s:
                 data[field] = f"{cur_s}\n{nxt_s}".strip()
 
-    extra_requirements = [
-        ExtraStandardRequirement.model_validate(item)
-        for item in data.get("extra_standard_requirements") or []
-    ]
-    for item in incoming.extra_standard_requirements:
-        if not any(
-            existing.requirement_name == item.requirement_name
-            and existing.requirement_text == item.requirement_text
-            and existing.source_section == item.source_section
-            for existing in extra_requirements
-        ):
-            extra_requirements.append(item)
+    extra_requirements = merge_extra_requirements(
+        [
+            ExtraStandardRequirement.model_validate(item)
+            for item in data.get("extra_standard_requirements") or []
+        ],
+        incoming.extra_standard_requirements,
+    )
     data["extra_standard_requirements"] = [item.model_dump() for item in extra_requirements]
 
     overrides = {k: ManualOverride.model_validate(v) for k, v in (data.get("manual_overrides") or {}).items()}

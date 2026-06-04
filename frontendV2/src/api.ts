@@ -1,4 +1,4 @@
-import type {ResumeRequest, RunState, TestTypeAliasesUpdateResponse, TestTypeCatalogResponse} from './types';
+import type {ResumeRequest, RunHistoryResponse, RunState, TestTypeAliasesUpdateResponse, TestTypeCatalogResponse} from './types';
 
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '');
 
@@ -103,8 +103,14 @@ export async function fetchRun(run_id: string): Promise<RunState> {
   return parseJsonResponse<RunState>(response, '获取运行状态');
 }
 
-export async function exportRun(runId: string): Promise<Blob> {
-  const response = await fetchWithTimeout(`${API_BASE}/runs/${encodeURIComponent(runId)}/export`, {
+export async function fetchRunHistory(): Promise<RunHistoryResponse> {
+  const response = await fetchWithTimeout(`${API_BASE}/runs`);
+  return parseJsonResponse<RunHistoryResponse>(response, '获取报价历史');
+}
+
+export async function exportRun(runId: string, quoteId = ''): Promise<Blob> {
+  const params = quoteId ? `?quote_id=${encodeURIComponent(quoteId)}` : '';
+  const response = await fetchWithTimeout(`${API_BASE}/runs/${encodeURIComponent(runId)}/export${params}`, {
     method: 'POST',
   });
   if (!response.ok) {
@@ -125,6 +131,18 @@ export async function resumeRun(runId: string, request: ResumeRequest): Promise<
     RUN_REQUEST_TIMEOUT_MS,
   );
   return parseJsonResponse<RunState>(response, '重新报价');
+}
+
+export async function updateBatchQuoteVisibility(runId: string, quoteId: string, isDeleted: boolean): Promise<RunState> {
+  const response = await fetchWithTimeout(
+    `${API_BASE}/runs/${encodeURIComponent(runId)}/batch-quotes/${encodeURIComponent(quoteId)}`,
+    {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({is_deleted: isDeleted}),
+    },
+  );
+  return parseJsonResponse<RunState>(response, isDeleted ? '删除子报价' : '恢复子报价');
 }
 
 export async function fetchTestTypes(): Promise<TestTypeCatalogResponse> {

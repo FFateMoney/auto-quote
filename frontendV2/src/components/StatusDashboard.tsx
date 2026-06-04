@@ -10,10 +10,15 @@ import type {RunState, UploadedDocument} from '../types';
 export const StatusDashboard: React.FC<{
   runState: RunState;
   onDocumentOpen: (event: React.MouseEvent<HTMLAnchorElement>, document: UploadedDocument) => void;
+  onExportAll: () => void;
+  onExportSingle: () => void;
   onRefresh: () => void;
   artifactUrl: (artifactPath: string) => string;
+  canExportAll: boolean;
+  canExportSingle: boolean;
+  isExporting: boolean;
   isRefreshing: boolean;
-}> = ({runState, onDocumentOpen, onRefresh, artifactUrl, isRefreshing}) => {
+}> = ({runState, onDocumentOpen, onExportAll, onExportSingle, onRefresh, artifactUrl, canExportAll, canExportSingle, isExporting, isRefreshing}) => {
   const uploadedFiles = runState.uploaded_documents.map((item) => item.file_name).join('、') || '-';
   const items = [
     {label: '运行 ID', value: runState.run_id, icon: Fingerprint},
@@ -77,17 +82,38 @@ export const StatusDashboard: React.FC<{
             )) : <EmptyText>暂无上传文件</EmptyText>}
           </LinkGroup>
           <LinkGroup title="导出文件">
-            {runState.artifacts.exported_files.length > 0 ? runState.artifacts.exported_files.map((path) => (
-              <a
-                key={path}
-                href={artifactUrl(path)}
-                download
-                className="inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600"
+            {runState.quote_mode === 'batch' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onExportAll}
+                  disabled={isExporting || !canExportAll}
+                  className="inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Download size={14} className="shrink-0" />
+                  <span>全部导出</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onExportSingle}
+                  disabled={isExporting || !canExportSingle}
+                  className="inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Download size={14} className="shrink-0" />
+                  <span>单个导出</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onExportAll}
+                disabled={isExporting || !canExportAll}
+                className="inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Download size={14} className="shrink-0" />
-                <span className="truncate">{path.split('/').at(-1) ?? path}</span>
-              </a>
-            )) : <EmptyText>暂无导出文件</EmptyText>}
+                <span>导出报价单</span>
+              </button>
+            )}
           </LinkGroup>
         </div>
       </div>

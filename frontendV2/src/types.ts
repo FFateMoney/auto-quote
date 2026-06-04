@@ -127,6 +127,8 @@ export type BatchQuoteItem = {
   title: string;
   source_summary: string;
   status: "running" | "waiting_manual_input" | "completed" | "failed";
+  is_deleted: boolean;
+  deleted_at: string;
   errors: string[];
   form_stages: FormStageSnapshot[];
   final_form_items: FormRow[];
@@ -146,6 +148,21 @@ export type RunState = {
   errors: string[];
   created_at: string;
   updated_at: string;
+};
+
+export type RunHistoryItem = {
+  run_id: string;
+  label: string;
+  quote_mode: "single" | "batch" | string;
+  overall_status: string;
+  current_stage: string;
+  created_at: string;
+  updated_at: string;
+  uploaded_files: string[];
+};
+
+export type RunHistoryResponse = {
+  items: RunHistoryItem[];
 };
 
 export type ResumeRequest = {

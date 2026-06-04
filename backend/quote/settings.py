@@ -24,6 +24,9 @@ class QuoteSettings:
     standard_index_enable: bool
     standard_retrieval_top_k: int
     standard_retrieval_expand_neighbors: bool
+    document_targeted_enrich_enabled: bool
+    standard_enrich_enabled: bool
+    equipment_reselect_after_standard_enabled: bool
     ocr_service_base_url: str
     indexing_service_base_url: str
     qwen_api_key: str
@@ -51,6 +54,21 @@ def get_settings() -> QuoteSettings:
         standard_index_enable=as_bool(_s("QUOTE_STANDARD_INDEX_ENABLE", "standard_index_enable"), default=True),
         standard_retrieval_top_k=int(_s("QUOTE_STANDARD_RETRIEVAL_TOP_K", "standard_retrieval_top_k", default=5)),
         standard_retrieval_expand_neighbors=as_bool(_s("QUOTE_STANDARD_RETRIEVAL_EXPAND_NEIGHBORS", "standard_retrieval_expand_neighbors"), default=True),
+        document_targeted_enrich_enabled=as_bool(
+            os.environ.get("QUOTE_DOCUMENT_TARGETED_ENRICH_ENABLED")
+            or nested(cfg, "quote_pipeline", "document_targeted_enrich_enabled", default=True),
+            default=True,
+        ),
+        standard_enrich_enabled=as_bool(
+            os.environ.get("QUOTE_STANDARD_ENRICH_ENABLED")
+            or nested(cfg, "quote_pipeline", "standard_enrich_enabled", default=True),
+            default=True,
+        ),
+        equipment_reselect_after_standard_enabled=as_bool(
+            os.environ.get("QUOTE_EQUIPMENT_RESELECT_AFTER_STANDARD_ENABLED")
+            or nested(cfg, "quote_pipeline", "equipment_reselect_after_standard_enabled", default=True),
+            default=True,
+        ),
         ocr_service_base_url=str(_s("QUOTE_OCR_SERVICE_BASE_URL", "ocr_service_base_url", default="http://127.0.0.1:8001")).rstrip("/"),
         indexing_service_base_url=str(_s("QUOTE_INDEXING_SERVICE_BASE_URL", "indexing_service_base_url", default="http://127.0.0.1:8003")).rstrip("/"),
         qwen_api_key=str(_s("QWEN_API_KEY", "qwen", "api_key") or nested(cfg, "qwen", "api_key", default="")),

@@ -1,6 +1,11 @@
 runtime:
   run_dir: "runtime/runs"
 
+quote_pipeline:
+  document_targeted_enrich_enabled: true
+  standard_enrich_enabled: true
+  equipment_reselect_after_standard_enabled: true
+
 auth:
   enabled: true
   password: "change-me"

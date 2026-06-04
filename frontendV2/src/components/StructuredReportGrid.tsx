@@ -25,7 +25,9 @@ type RangeInputKey =
   | 'required_water_temp_range'
   | 'required_water_flow_range';
 
-type DisplayFieldKey = keyof FormRow | RangeInputKey;
+type ExtraRequirementColumnKey = `extra_requirement:${string}`;
+
+type DisplayFieldKey = keyof FormRow | RangeInputKey | ExtraRequirementColumnKey;
 
 type EditableFieldKey =
   | 'canonical_test_type'
@@ -63,7 +65,6 @@ const BASE_COLUMN_DEFS: ColumnDef[] = [
   {key: 'sample_width_mm', label: '样品宽(mm)', type: 'number'},
   {key: 'sample_height_mm', label: '样品高(mm)', type: 'number'},
   {key: 'sample_weight_kg', label: '样品重量(kg)', type: 'number'},
-  {key: 'extra_standard_requirements', label: '额外标准要求', type: 'text'},
   {key: 'selected_equipment_id', label: '选中设备', type: 'text'},
   {key: 'candidate_equipment_ids', label: '候选设备', type: 'text'},
   {key: 'base_fee', label: '基本金', type: 'number'},
@@ -121,6 +122,8 @@ const DYNAMIC_COLUMN_DEFS: ColumnDef[] = [
   {key: 'required_water_flow_range', label: '水流量要求', type: 'text'},
 ];
 
+const EXTRA_REQUIREMENT_KEY_PREFIX = 'extra_requirement:';
+
 const MANUAL_LABELS: Record<string, string> = {
   canonical_test_type: '标准试验类型',
   pricing_quantity: '计价数量',
@@ -168,7 +171,8 @@ export const StructuredReportGrid: React.FC<{
 
   const columnDefs = React.useMemo(() => {
     const dynamic = DYNAMIC_COLUMN_DEFS.filter((column) => shouldShowDynamicField(rows, column.key));
-    return [...BASE_COLUMN_DEFS.slice(0, 10), ...dynamic, ...BASE_COLUMN_DEFS.slice(10)];
+    const extraRequirements = getExtraRequirementColumnDefs(rows);
+    return [...BASE_COLUMN_DEFS.slice(0, 10), ...dynamic, ...extraRequirements, ...BASE_COLUMN_DEFS.slice(10)];
   }, [rows]);
 
   React.useEffect(() => {
@@ -384,7 +388,7 @@ export const StructuredReportGrid: React.FC<{
                           <div
                             className={`break-words text-base font-semibold font-mono ${value === '-' ? 'text-slate-300' : 'text-indigo-900'}`}
                             title={value}
-                            style={column.key === 'extra_standard_requirements' ? {whiteSpace: 'pre-wrap'} : undefined}
+                            style={isExtraRequirementColumn(column.key) ? {whiteSpace: 'pre-wrap'} : undefined}
                           >
                             {value}
                           </div>
@@ -507,11 +511,29 @@ function isEditableField(key: DisplayFieldKey): key is EditableFieldKey {
   return key in EDITABLE_FIELD_DEFS;
 }
 
+function isExtraRequirementColumn(key: DisplayFieldKey): key is ExtraRequirementColumnKey {
+  return typeof key === 'string' && key.startsWith(EXTRA_REQUIREMENT_KEY_PREFIX);
+}
+
+function makeExtraRequirementKey(name: string): ExtraRequirementColumnKey {
+  return `${EXTRA_REQUIREMENT_KEY_PREFIX}${encodeURIComponent(name)}`;
+}
+
+function getExtraRequirementName(key: ExtraRequirementColumnKey): string {
+  return decodeURIComponent(key.slice(EXTRA_REQUIREMENT_KEY_PREFIX.length));
+}
+
 function findRangeGroup(key: DisplayFieldKey) {
+  if (isExtraRequirementColumn(key)) {
+    return undefined;
+  }
   return RANGE_INPUT_GROUPS.find((group) => group.inputKey === key);
 }
 
 function getCoveredFieldNames(key: DisplayFieldKey): string[] {
+  if (isExtraRequirementColumn(key)) {
+    return [];
+  }
   const rangeGroup = findRangeGroup(key);
   if (rangeGroup) {
     return [String(rangeGroup.minField), String(rangeGroup.maxField)];
@@ -548,6 +570,12 @@ function formatExtraRequirement(item: ExtraStandardRequirement): string {
   return `${name}：${body}${source}`;
 }
 
+function formatExtraRequirementValue(item: ExtraStandardRequirement): string {
+  const body = item.requirement_text || '-';
+  const source = item.source_section ? `（${item.source_section}）` : '';
+  return `${body}${source}`;
+}
+
 function formatStatus(row: FormRow): string {
   if (row.stage_status) {
     return row.stage_status;
@@ -578,6 +606,13 @@ function getCommittedFieldValue(row: FormRow, key: EditableFieldKey, savedDrafts
 }
 
 function formatCell(row: FormRow, key: DisplayFieldKey, savedDrafts: Record<string, RowDrafts>): string {
+  if (isExtraRequirementColumn(key)) {
+    const name = getExtraRequirementName(key);
+    const values = row.extra_standard_requirements
+      .filter((item) => (item.requirement_name || '未命名要求') === name)
+      .map(formatExtraRequirementValue);
+    return values.length > 0 ? values.join('\n') : '-';
+  }
   if (isEditableField(key)) {
     return getCommittedFieldValue(row, key, savedDrafts);
   }
@@ -591,6 +626,12 @@ function formatCell(row: FormRow, key: DisplayFieldKey, savedDrafts: Record<stri
 }
 
 function shouldShowDynamicField(rows: FormRow[], key: DisplayFieldKey): boolean {
+  if (isExtraRequirementColumn(key)) {
+    const name = getExtraRequirementName(key);
+    return rows.some((row) =>
+      row.extra_standard_requirements.some((item) => (item.requirement_name || '未命名要求') === name),
+    );
+  }
   const coveredFields = new Set(getCoveredFieldNames(key));
   const rangeGroup = findRangeGroup(key);
   if (rangeGroup) {
@@ -607,6 +648,9 @@ function shouldShowDynamicField(rows: FormRow[], key: DisplayFieldKey): boolean 
     });
   }
   return rows.some((row) => {
+    if (isExtraRequirementColumn(key)) {
+      return false;
+    }
     const value = row[key as keyof FormRow];
     return (
       (value != null && value !== '' && (!Array.isArray(value) || value.length > 0)) ||
@@ -615,4 +659,25 @@ function shouldShowDynamicField(rows: FormRow[], key: DisplayFieldKey): boolean 
       row.discovered_standard_fields.some((field) => coveredFields.has(field))
     );
   });
+}
+
+function getExtraRequirementColumnDefs(rows: FormRow[]): ColumnDef[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  rows.forEach((row) => {
+    row.extra_standard_requirements.forEach((item) => {
+      const name = (item.requirement_name || '未命名要求').trim() || '未命名要求';
+      const key = name.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      names.push(name);
+    });
+  });
+  return names.map((name) => ({
+    key: makeExtraRequirementKey(name),
+    label: name,
+    type: 'text',
+  }));
 }

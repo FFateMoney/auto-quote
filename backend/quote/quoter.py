@@ -199,13 +199,8 @@ class Quoter:
                 continue
 
             if r.repeat_count is None:
-                r.stage_status = "waiting_manual_input"
-                r.missing_fields = _merge_fields(supplemental, ["repeat_count"])
-                r.blocking_reason = "缺少重复次数，无法计算报价"
-                overall = "waiting_manual_input"
-                notes.append(f"{r.canonical_test_type or r.raw_test_type}: {r.blocking_reason}")
-                updated.append(r)
-                continue
+                r.repeat_count = 1
+                notes.append(f"{r.canonical_test_type or r.raw_test_type}: 未提供重复次数，最终报价默认按 1 次计算")
 
             pricing_rows = self.catalog.get_pricing_rows(r.canonical_test_type)
             selected_row, reason = self._select_pricing_row(r.selected_equipment_id, pricing_rows)

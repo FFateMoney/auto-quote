@@ -226,6 +226,8 @@ class BatchQuoteItem(BaseModel):
     title: str = ""
     source_summary: str = ""
     status: Literal["running", "waiting_manual_input", "completed", "failed"] = "running"
+    is_deleted: bool = False
+    deleted_at: str = ""
     errors: list[str] = Field(default_factory=list)
     form_stages: list[FormStageSnapshot] = Field(default_factory=list)
     final_form_items: list[FormRow] = Field(default_factory=list)

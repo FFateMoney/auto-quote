@@ -6,25 +6,57 @@
 import React from 'react';
 import {CheckCircle2, FileText, Loader2, Upload, X} from 'lucide-react';
 import {motion} from 'motion/react';
+import {fetchRunHistory, toErrorMessage} from '../api';
 import type {QuoteMode} from '../api';
+import type {RunHistoryItem} from '../types';
 
 interface UploadSectionProps {
   error: string;
   isSubmitting: boolean;
   onStart: (files: File[], quoteMode: QuoteMode) => void;
   onStartFromText: (text: string) => void;
+  onLoadHistory: (runId: string) => void;
 }
 
 const ACCEPTED_FILES = '.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.bmp,.webp';
 const BATCH_ACCEPTED_FILES = '.xlsx';
 type InputMode = 'file' | 'text';
 
-export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting, onStart, onStartFromText}) => {
+export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting, onStart, onStartFromText, onLoadHistory}) => {
   const [quoteMode, setQuoteMode] = React.useState<QuoteMode>('single');
   const [inputMode, setInputMode] = React.useState<InputMode>('file');
   const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
   const [plainText, setPlainText] = React.useState('');
+  const [historyItems, setHistoryItems] = React.useState<RunHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = React.useState(false);
+  const [historyError, setHistoryError] = React.useState('');
   const trimmedText = plainText.trim();
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function loadHistory() {
+      setHistoryLoading(true);
+      setHistoryError('');
+      try {
+        const data = await fetchRunHistory();
+        if (!cancelled) {
+          setHistoryItems(data.items);
+        }
+      } catch (fetchError) {
+        if (!cancelled) {
+          setHistoryError(toErrorMessage(fetchError, '无法获取报价历史'));
+        }
+      } finally {
+        if (!cancelled) {
+          setHistoryLoading(false);
+        }
+      }
+    }
+    void loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -48,6 +80,40 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
           </div>
           <h2 className="text-2xl font-bold text-slate-800">上传原始文档</h2>
           <p className="text-slate-500 mt-2">支持上传文档或直接粘贴纯文本需求。</p>
+        </div>
+
+        <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 text-left">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <label htmlFor="run-history-select" className="text-sm font-bold text-slate-700">报价历史查询</label>
+            {historyLoading ? (
+              <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                <Loader2 size={12} className="animate-spin" />
+                加载中
+              </span>
+            ) : null}
+          </div>
+          <select
+            id="run-history-select"
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 outline-none transition-colors focus:border-indigo-300 focus:bg-white focus:ring-4 focus:ring-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+            defaultValue=""
+            disabled={historyLoading || isSubmitting || historyItems.length === 0}
+            onChange={(event) => {
+              const runId = event.target.value;
+              if (!runId) {
+                return;
+              }
+              onLoadHistory(runId);
+              event.target.value = "";
+            }}
+          >
+            <option value="">{historyItems.length > 0 ? '选择历史报价运行' : '暂无历史报价'}</option>
+            {historyItems.map((item) => (
+              <option key={item.run_id} value={item.run_id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          {historyError ? <div className="mt-2 text-xs font-medium text-red-600">{historyError}</div> : null}
         </div>
 
         <div className="mb-5 grid grid-cols-2 rounded-xl border border-slate-200 bg-slate-50 p-1">

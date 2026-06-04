@@ -4,8 +4,8 @@
  */
 
 import React from 'react';
-import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, Settings, X} from 'lucide-react';
-import {API_BASE, buildArtifactUrl, createRun, createRunFromText, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage} from './api';
+import {HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, RotateCcw, Settings, Trash2, X} from 'lucide-react';
+import {API_BASE, buildArtifactUrl, createRun, createRunFromText, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage, updateBatchQuoteVisibility} from './api';
 import logoUrl from './assets/logo_cut.png';
 import smallLogoUrl from './assets/small_logo.png';
 import {EquipmentTables} from './components/EquipmentTables';
@@ -39,6 +39,7 @@ export default function App() {
   const [error, setError] = React.useState('');
   const [stageDialogOpen, setStageDialogOpen] = React.useState(false);
   const [previewDocument, setPreviewDocument] = React.useState<PreviewDocument | null>(null);
+  const [quoteVisibilityUpdating, setQuoteVisibilityUpdating] = React.useState('');
 
   React.useEffect(() => {
     let mounted = true;
@@ -76,6 +77,10 @@ export default function App() {
     return () => window.removeEventListener('autoquote:auth-expired', handleAuthExpired);
   }, []);
 
+  const visibleBatchQuotes = React.useMemo(() => {
+    return runState?.quote_mode === 'batch' ? runState.batch_quotes.filter((quote) => !quote.is_deleted) : [];
+  }, [runState]);
+
   const activeBatchQuote: BatchQuoteItem | undefined = React.useMemo(() => {
     if (!runState) {
       return undefined;
@@ -83,16 +88,37 @@ export default function App() {
     if (runState.quote_mode !== 'batch') {
       return undefined;
     }
-    return runState.batch_quotes.find((quote) => quote.quote_id === activeQuoteId) ?? runState.batch_quotes[0];
-  }, [activeQuoteId, runState]);
+    return visibleBatchQuotes.find((quote) => quote.quote_id === activeQuoteId) ?? visibleBatchQuotes[0];
+  }, [activeQuoteId, runState, visibleBatchQuotes]);
 
-  const visibleStages = activeBatchQuote?.form_stages ?? runState?.form_stages ?? [];
+  const visibleStages = runState?.quote_mode === 'batch'
+    ? activeBatchQuote?.form_stages ?? []
+    : runState?.form_stages ?? [];
+  const displayRunState = React.useMemo<RunState | null>(() => {
+    if (!runState) {
+      return null;
+    }
+    if (runState.quote_mode !== 'batch' || !activeBatchQuote) {
+      return runState;
+    }
+    return {
+      ...runState,
+      form_stages: activeBatchQuote.form_stages,
+      final_form_items: activeBatchQuote.final_form_items,
+    };
+  }, [activeBatchQuote, runState]);
   const canExport = React.useMemo(() => {
     if (!runState) {
       return false;
     }
     return runState.final_form_items.some((row) => row.stage_status === 'quoted' && row.total_price != null);
   }, [runState]);
+  const canExportActiveQuote = React.useMemo(() => {
+    if (!activeBatchQuote) {
+      return false;
+    }
+    return activeBatchQuote.final_form_items.some((row) => row.stage_status === 'quoted' && row.total_price != null);
+  }, [activeBatchQuote]);
 
   const activeStage: FormStageSnapshot | undefined = React.useMemo(() => {
     return visibleStages.find((stage) => stage.stage_id === activeStageId) ?? visibleStages.at(-1);
@@ -113,10 +139,11 @@ export default function App() {
   }, [previewDocument, stageDialogOpen]);
 
   function syncActivePointers(next: RunState, preferredStageId = activeStageId, preferredQuoteId = activeQuoteId) {
+    const nextVisibleQuotes = next.quote_mode === 'batch' ? next.batch_quotes.filter((quote) => !quote.is_deleted) : [];
     const nextQuote = next.quote_mode === 'batch'
-      ? next.batch_quotes.find((quote) => quote.quote_id === preferredQuoteId) ?? next.batch_quotes[0]
+      ? nextVisibleQuotes.find((quote) => quote.quote_id === preferredQuoteId) ?? nextVisibleQuotes[0]
       : undefined;
-    const stages = nextQuote?.form_stages ?? next.form_stages;
+    const stages = next.quote_mode === 'batch' ? nextQuote?.form_stages ?? [] : next.form_stages;
     setActiveQuoteId(nextQuote?.quote_id ?? '');
     setActiveStageId(stages.some((stage) => stage.stage_id === preferredStageId) ? preferredStageId : stages.at(-1)?.stage_id ?? next.current_stage);
   }
@@ -163,6 +190,24 @@ export default function App() {
     }
   }
 
+  async function handleLoadHistory(runId: string) {
+    if (!runId || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      const next = await fetchRun(runId);
+      setRunState(next);
+      syncActivePointers(next, '', '');
+      setView('dashboard');
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, '无法加载历史报价'));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function refreshRun() {
     if (!runState || refreshing) {
       return;
@@ -180,18 +225,18 @@ export default function App() {
     }
   }
 
-  async function handleExport() {
+  async function handleExport(quoteId = '') {
     if (!runState || submitting) {
       return;
     }
     setSubmitting(true);
     setError('');
     try {
-      const blob = await exportRun(runState.run_id);
+      const blob = await exportRun(runState.run_id, quoteId);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `报价单_${runState.run_id}.docx`;
+      a.download = quoteId ? `报价单_${runState.run_id}_${quoteId}.docx` : `报价单_${runState.run_id}.docx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -207,6 +252,23 @@ export default function App() {
   function handleRunUpdated(next: RunState) {
     setRunState(next);
     syncActivePointers(next);
+  }
+
+  async function handleBatchQuoteVisibility(quote: BatchQuoteItem, isDeleted: boolean) {
+    if (!runState || quoteVisibilityUpdating) {
+      return;
+    }
+    setQuoteVisibilityUpdating(quote.quote_id);
+    setError('');
+    try {
+      const next = await updateBatchQuoteVisibility(runState.run_id, quote.quote_id, isDeleted);
+      setRunState(next);
+      syncActivePointers(next, activeStageId, activeQuoteId === quote.quote_id && isDeleted ? '' : activeQuoteId);
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, isDeleted ? '删除子报价失败' : '恢复子报价失败'));
+    } finally {
+      setQuoteVisibilityUpdating('');
+    }
   }
 
   function artifactUrl(path: string) {
@@ -303,10 +365,6 @@ export default function App() {
           <div className="relative z-10 ml-auto flex items-center gap-3">
             {view === 'dashboard' && runState ? (
               <>
-                <button type="button" onClick={() => void handleExport()} disabled={submitting || !canExport} className="btn-secondary text-xs flex items-center gap-1.5 disabled:opacity-50">
-                  <Download className="w-3.5 h-3.5" />
-                  导出报价单
-                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -339,36 +397,47 @@ export default function App() {
               isSubmitting={submitting}
               onStart={(files, quoteMode) => void handleStart(files, quoteMode)}
               onStartFromText={(text) => void handleStartFromText(text)}
+              onLoadHistory={(runId) => void handleLoadHistory(runId)}
             />
           ) : view === 'settings' ? (
             <TestTypeAliasManager />
-          ) : runState ? (
+          ) : runState && displayRunState ? (
             <div className="max-w-screen-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
               {error ? <div className="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div> : null}
               <StatusDashboard
                 runState={runState}
                 onDocumentOpen={handleUploadedDocumentClick}
+                onExportAll={() => void handleExport()}
+                onExportSingle={() => activeBatchQuote && void handleExport(activeBatchQuote.quote_id)}
                 onRefresh={() => void refreshRun()}
                 artifactUrl={artifactUrl}
+                canExportAll={canExport}
+                canExportSingle={canExportActiveQuote}
+                isExporting={submitting}
                 isRefreshing={refreshing}
               />
               {runState.quote_mode === 'batch' ? (
                 <BatchQuoteSwitcher
                   quotes={runState.batch_quotes}
                   activeQuoteId={activeBatchQuote?.quote_id ?? ''}
+                  updatingQuoteId={quoteVisibilityUpdating}
                   onSelect={(quote) => {
                     setActiveQuoteId(quote.quote_id);
                     setActiveStageId(quote.form_stages.at(-1)?.stage_id ?? '');
                   }}
+                  onDelete={(quote) => void handleBatchQuoteVisibility(quote, true)}
+                  onRestore={(quote) => void handleBatchQuoteVisibility(quote, false)}
                 />
               ) : null}
               <div className="space-y-4">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-3">
-                  <h2 className="text-2xl font-bold text-slate-800">结构化报价报表</h2>
+                  <h2 className="text-2xl font-bold text-slate-800">
+                    {runState.quote_mode === 'batch' && activeBatchQuote ? activeBatchQuote.title || '子报价' : '结构化报价报表'}
+                  </h2>
                   <p className="text-slate-400 text-sm font-medium">STRUCTURED QUOTE REPORT</p>
                 </div>
-                <StructuredReportGrid activeStage={activeStage} runState={runState} onUpdated={handleRunUpdated} />
-                <EquipmentTables activeStage={activeStage} runState={runState} onUpdated={handleRunUpdated} />
+                <StructuredReportGrid activeStage={activeStage} runState={displayRunState} onUpdated={handleRunUpdated} />
+                <EquipmentTables activeStage={activeStage} runState={displayRunState} onUpdated={handleRunUpdated} />
               </div>
             </div>
           ) : (
@@ -461,12 +530,21 @@ export default function App() {
 function BatchQuoteSwitcher({
   quotes,
   activeQuoteId,
+  updatingQuoteId,
   onSelect,
+  onDelete,
+  onRestore,
 }: {
   quotes: BatchQuoteItem[];
   activeQuoteId: string;
+  updatingQuoteId: string;
   onSelect: (quote: BatchQuoteItem) => void;
+  onDelete: (quote: BatchQuoteItem) => void;
+  onRestore: (quote: BatchQuoteItem) => void;
 }) {
+  const [trashOpen, setTrashOpen] = React.useState(false);
+  const visibleQuotes = quotes.filter((quote) => !quote.is_deleted);
+  const deletedQuotes = quotes.filter((quote) => quote.is_deleted);
   if (quotes.length === 0) {
     return null;
   }
@@ -477,36 +555,91 @@ function BatchQuoteSwitcher({
           <h2 className="text-sm font-bold text-slate-800">批量报价</h2>
           <p className="mt-0.5 text-xs text-slate-400">切换查看每个子报价的结构化表格和设备匹配结果。</p>
         </div>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">
-          {quotes.length} 项
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">
+            {visibleQuotes.length} / {quotes.length} 项
+          </span>
+          <button
+            type="button"
+            className={`inline-flex h-8 items-center gap-1 rounded-lg border px-2.5 text-xs font-bold transition-colors ${deletedQuotes.length > 0 ? 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:text-indigo-700' : 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300'}`}
+            disabled={deletedQuotes.length === 0}
+            onClick={() => setTrashOpen((open) => !open)}
+            title="回收站"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            回收站
+            {deletedQuotes.length > 0 ? <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px]">{deletedQuotes.length}</span> : null}
+          </button>
+        </div>
       </div>
+      {trashOpen && deletedQuotes.length > 0 ? (
+        <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="mb-2 text-xs font-bold text-slate-500">已删除报价</div>
+          <div className="flex flex-wrap gap-2">
+            {deletedQuotes.map((quote) => (
+              <div key={quote.quote_id} className="flex max-w-sm items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-bold text-slate-700">{quote.title || quote.quote_id}</div>
+                  <div className="truncate text-[11px] text-slate-400">{quote.source_summary || quote.quote_id}</div>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-700 hover:border-emerald-200"
+                  disabled={updatingQuoteId === quote.quote_id}
+                  onClick={() => onRestore(quote)}
+                  title="恢复报价"
+                >
+                  {updatingQuoteId === quote.quote_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                  恢复
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {visibleQuotes.length === 0 ? (
+        <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+          当前没有可见子报价，可从回收站恢复。
+        </div>
+      ) : null}
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {quotes.map((quote, index) => {
+        {visibleQuotes.map((quote, index) => {
           const active = quote.quote_id === activeQuoteId;
           const quotedCount = quote.final_form_items.filter((row) => row.stage_status === 'quoted' && row.total_price != null).length;
           return (
-            <button
+            <div
               key={quote.quote_id}
-              type="button"
-              onClick={() => onSelect(quote)}
-              className={`min-w-56 rounded-lg border px-3 py-2 text-left transition-colors ${active ? 'border-indigo-200 bg-indigo-50 text-indigo-800' : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200'}`}
+              className={`min-w-56 rounded-lg border transition-colors ${active ? 'border-indigo-200 bg-indigo-50 text-indigo-800' : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200'}`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-bold">{quote.title || `子报价 ${index + 1}`}</span>
-                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${getQuoteStatusClass(quote.status)}`}>
-                  {quote.status.replace(/_/g, ' ')}
-                </span>
+              <button type="button" onClick={() => onSelect(quote)} className="block w-full px-3 pb-2 pt-2 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-bold">{quote.title || `子报价 ${index + 1}`}</span>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${getQuoteStatusClass(quote.status)}`}>
+                    {quote.status.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <div className="mt-1 truncate text-xs opacity-75">{quote.source_summary || quote.quote_id}</div>
+                <div className="mt-1 text-xs opacity-75">报价行 {quotedCount} / {quote.final_form_items.length}</div>
+              </button>
+              <div className="flex justify-end border-t border-slate-100 px-2 py-1">
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  disabled={updatingQuoteId === quote.quote_id}
+                  onClick={() => onDelete(quote)}
+                  title="删除报价"
+                  aria-label={`删除 ${quote.title || quote.quote_id}`}
+                >
+                  {updatingQuoteId === quote.quote_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                </button>
               </div>
-              <div className="mt-1 truncate text-xs opacity-75">{quote.source_summary || quote.quote_id}</div>
-              <div className="mt-1 text-xs opacity-75">已报价 {quotedCount} / {quote.final_form_items.length}</div>
-            </button>
+            </div>
           );
         })}
       </div>
-      {quotes.some((quote) => quote.errors.length > 0) ? (
+      {visibleQuotes.some((quote) => quote.errors.length > 0) ? (
         <div className="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-          {quotes.filter((quote) => quote.errors.length > 0).map((quote) => `${quote.title || quote.quote_id}: ${quote.errors.join('；')}`).join('；')}
+          {visibleQuotes.filter((quote) => quote.errors.length > 0).map((quote) => `${quote.title || quote.quote_id}: ${quote.errors.join('；')}`).join('；')}
         </div>
       ) : null}
     </div>

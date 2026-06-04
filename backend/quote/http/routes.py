@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,36 @@ class LoginRequest(BaseModel):
 class TextRunRequest(BaseModel):
     text: str
     title: str = ""
+
+
+class BatchQuoteVisibilityRequest(BaseModel):
+    is_deleted: bool
+
+
+def _run_history_item(run_state_path: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(run_state_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Skip unreadable run_state: %s", run_state_path)
+        return None
+    run_id = str(payload.get("run_id") or run_state_path.parent.name).strip()
+    if not run_id:
+        return None
+    uploaded_files = [
+        str(item.get("file_name") or "").strip()
+        for item in payload.get("uploaded_documents") or []
+        if isinstance(item, dict) and str(item.get("file_name") or "").strip()
+    ]
+    return {
+        "run_id": run_id,
+        "label": run_id,
+        "quote_mode": str(payload.get("quote_mode") or ""),
+        "overall_status": str(payload.get("overall_status") or ""),
+        "current_stage": str(payload.get("current_stage") or ""),
+        "created_at": str(payload.get("created_at") or ""),
+        "updated_at": str(payload.get("updated_at") or ""),
+        "uploaded_files": uploaded_files,
+    }
 
 
 def get_orchestrator() -> QuoteOrchestrator:
@@ -144,6 +175,19 @@ def update_test_type_aliases(test_type_id: int, request: TestTypeAliasesUpdateRe
     }
 
 
+@router.get("/api/runs")
+def list_runs() -> dict[str, object]:
+    run_root = get_settings().run_dir
+    items: list[dict[str, object]] = []
+    if run_root.exists():
+        for run_state_path in run_root.glob("*/run_state.json"):
+            item = _run_history_item(run_state_path)
+            if item is not None:
+                items.append(item)
+    items.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return {"items": items}
+
+
 @router.post("/api/runs")
 async def create_run(files: list[UploadFile] = File(...), quote_mode: str = Form("single")):
     if not files:
@@ -231,10 +275,28 @@ def resume_run(run_id: str, request: ResumeRequest):
         raise HTTPException(status_code=404, detail="run_not_found") from exc
 
 
-@router.post("/api/runs/{run_id}/export")
-def export_run(run_id: str):
+@router.patch("/api/runs/{run_id}/batch-quotes/{quote_id}")
+def update_batch_quote_visibility(run_id: str, quote_id: str, request: BatchQuoteVisibilityRequest):
     try:
-        path = get_orchestrator().export_docx(run_id)
+        return get_orchestrator().set_batch_quote_deleted(
+            run_id=run_id,
+            quote_id=quote_id,
+            deleted=request.is_deleted,
+        ).model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="run_not_found") from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="batch_quote_not_found") from exc
+    except RuntimeError as exc:
+        if str(exc) == "run_is_not_batch":
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/api/runs/{run_id}/export")
+def export_run(run_id: str, quote_id: str = ""):
+    try:
+        path = get_orchestrator().export_docx(run_id, quote_id=quote_id.strip())
         return FileResponse(
             path, 
             filename=path.name, 

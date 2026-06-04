@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
+from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 
 from backend.common.logging import append_run_log
 from backend.common.models import NormalizedDocument, NormalizedTextBlock
@@ -27,23 +28,17 @@ DOCUMENT_EXTRACT_VISIBLE_FIELDS: tuple[str, ...] = (
     "sample_width_mm",
     "sample_height_mm",
     "sample_weight_kg",
-    "required_temp_min",
-    "required_temp_max",
-    "required_humidity_min",
-    "required_humidity_max",
-    "required_temp_change_rate",
-    "required_freq_min",
-    "required_freq_max",
-    "required_accel_min",
-    "required_accel_max",
-    "required_displacement_min",
-    "required_displacement_max",
-    "required_irradiance_min",
-    "required_irradiance_max",
-    "required_water_temp_min",
-    "required_water_temp_max",
-    "required_water_flow_min",
-    "required_water_flow_max",
+    "source_text",
+    "conditions_text",
+    "sample_info_text",
+)
+
+DOCUMENT_TARGETED_CONTEXT_FIELDS: tuple[str, ...] = (
+    "row_id",
+    "raw_test_type",
+    "canonical_test_type",
+    "standard_codes",
+    "planned_standard_fields",
     "source_text",
     "conditions_text",
     "sample_info_text",
@@ -181,6 +176,21 @@ class BatchQuoteSplitResult:
 
 
 @dataclass(slots=True)
+class BatchExcelChunkItem:
+    quote_id: str
+    title: str
+    source_summary: str
+    chunk: Any
+
+
+@dataclass(slots=True)
+class BatchExcelChunkSplitResult:
+    items: list[BatchExcelChunkItem]
+    summary: str = ""
+    raw_response: str = ""
+
+
+@dataclass(slots=True)
 class StandardFieldDiscoveryItem:
     row_id: str
     discovered_standard_fields: list[str]
@@ -199,29 +209,74 @@ def _load_prompts(path: Path) -> dict[str, Any]:
 
 
 def _schema_example(visible_fields: tuple[str, ...]) -> dict[str, Any]:
-    example = FormRow.schema_example()
-    payload = {field: example.get(field, "" if field != "standard_codes" else []) for field in visible_fields}
-    if "row_id" in visible_fields:
-        payload["row_id"] = ""
+    payload = {field: _schema_placeholder(field) for field in visible_fields}
     return {"items": [payload]}
+
+
+def _schema_placeholder(field: str) -> Any:
+    if field in {"standard_codes", "planned_standard_fields", "discovered_standard_fields"}:
+        return []
+    if field == "extra_standard_requirements":
+        return [{"requirement_name": "", "requirement_text": "", "source_section": ""}]
+    if field in {
+        "pricing_quantity", "sample_count", "repeat_count",
+        "sample_length_mm", "sample_width_mm", "sample_height_mm", "sample_weight_kg",
+        "required_temp_min", "required_temp_max", "required_humidity_min", "required_humidity_max",
+        "required_temp_change_rate", "required_freq_min", "required_freq_max",
+        "required_accel_min", "required_accel_max", "required_displacement_min", "required_displacement_max",
+        "required_irradiance_min", "required_irradiance_max",
+        "required_water_temp_min", "required_water_temp_max",
+        "required_water_flow_min", "required_water_flow_max",
+        "matched_test_type_id", "base_fee", "unit_price", "total_price",
+    }:
+        return None
+    return ""
+
+
+def _document_targeted_visible_fields(target_fields_by_row: dict[str, list[str]]) -> tuple[str, ...]:
+    fields = [*DOCUMENT_TARGETED_CONTEXT_FIELDS, "extra_standard_requirements"]
+    for targets in target_fields_by_row.values():
+        for field in targets:
+            if field not in fields:
+                fields.append(field)
+    return tuple(fields)
+
+
+def _test_type_options_text(test_type_options: list[str]) -> str:
+    options = [str(item or "").strip() for item in test_type_options if str(item or "").strip()]
+    if not options:
+        return "- (未加载到标准试验类型列表；canonical_test_type 无法确认时填空字符串)"
+    return "\n".join(f"- {name}" for name in options)
+
+
+def _jsonable_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, list):
+        return [_jsonable_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _jsonable_value(item) for key, item in value.items()}
+    return value
 
 
 def _rules_text(*, preserve_row_ids: bool, include_sample_count: bool) -> str:
     lines = [
-        "1. 只输出 JSON，对象根节点必须是 items 数组。",
-        "2. 一个测试项目对应一行，不要把同一项目重复拆成多行。",
-        "3. `standard_codes` 必须是字符串数组，没有就给空数组。",
-        "4. `sample_length_mm`、`sample_width_mm`、`sample_height_mm` 分别填写样品长宽高，未知时给 null；如果文档没有直接写样品长宽，但明确写了夹具或工装的长宽，且该尺寸显然对应待测件装夹/占位尺寸，可将夹具或工装长宽视为样品长宽填写。",
-        "5. 数值字段只能填数字或 null，不要带单位。",
-        "6. `source_text`、`conditions_text`、`sample_info_text` 使用简洁中文总结来源信息。",
-        "7. 遇到无法确定的字段留空字符串、空数组或 null，不要编造。",
-        "8. 如果文档写的是确定单值而不是范围，例如温度 80℃、湿度 95%RH、水温 25℃、流量 10L/min、辐照 800W/m2，就把对应的 min/max 两个字段都填成同一个值。",
-        "9. 文中的 `[IMAGE_n]` 与图片输入一一对应，图片是文档插图，不是时间序列视频帧。",
-        "10. `pricing_quantity` 表示单次执行的计价数量，例如 5 小时。",
-        "11. `required_temp_change_rate` 是唯一允许通过计算或推断得到的字段：如果文档或标准明确给出温变速率，则直接填写数值部分；如果没有直接给出，但给出了温度范围和对应升温/降温耗时，可以据此计算并填写；如果只有温度范围没有对应耗时，或只有总时长但无法确认对应的是升降温阶段，就不要猜。",
+        "只输出 JSON，对象根节点必须是 items 数组。",
+        "一个测试项目对应一行，不要把同一项目重复拆成多行。",
+        "`standard_codes` 必须是字符串数组，没有就给空数组。",
+        "`sample_length_mm`、`sample_width_mm`、`sample_height_mm` 分别填写样品长宽高，未知时给 null；如果文档没有直接写样品长宽，但明确写了夹具或工装的长宽，且该尺寸显然对应待测件装夹/占位尺寸，可将夹具或工装长宽视为样品长宽填写。",
+        "数值字段只能填数字或 null，不要带单位。",
+        "`source_text`、`conditions_text`、`sample_info_text` 使用简洁中文总结来源信息。",
+        "遇到无法确定的字段留空字符串、空数组或 null，不要编造。",
+        "如果同一信息存在中文、英文或其他语言版本且含义冲突，以中文内容为准。",
+        "如果文档写的是确定单值而不是范围，例如温度 80℃、湿度 95%RH、水温 25℃、流量 10L/min、辐照 800W/m2，就把对应的 min/max 两个字段都填成同一个值。",
+        "文中的 `[IMAGE_n]` 与图片输入一一对应，图片是文档插图，不是时间序列视频帧。",
+        "`pricing_mode` 表示计价单位或计价方式，例如 小时、件、次、天、组、轴、方向。",
+        "`pricing_quantity` 表示本报价行的总计价数量；如果文档写“每方向/每轴 5 小时，共 3 个方向/轴”，应填写 15。",
+        "`required_temp_change_rate` 是唯一允许通过计算或推断得到的字段：如果文档或标准明确给出温变速率，则直接填写数值部分；如果没有直接给出，但给出了温度范围和对应升温/降温耗时，可以据此计算并填写；如果只有温度范围没有对应耗时，或只有总时长但无法确认对应的是升降温阶段，就不要猜。",
     ]
     if include_sample_count:
-        lines.insert(10, "`sample_count` 表示本次测试的总件数/总样品数，例如 10 件；如果文档没有明确写出就留空。")
+        lines.insert(10, "`sample_count` 表示本次测试的总件数/总样品数；如果同一报价需求包含多个颜色、型号、样品组或件数，应加总；如果文档没有明确写出就留空。")
     if preserve_row_ids:
         lines.append("如果是在补全已有表格，必须尽量保留已有行的 `row_id`，并在原有行上补字段，不要新增重复行。")
     lines = [f"{idx}. {line}" for idx, line in enumerate(lines, start=1)]
@@ -320,7 +375,13 @@ class QwenRequester:
         self.prompts = _load_prompts(prompts_path or settings.prompts_path)
         self.client = client or OpenAI(api_key=settings.qwen_api_key, base_url=settings.qwen_base_url)
 
-    def extract_form(self, documents: list[NormalizedDocument], *, run_dir: Path | None = None) -> ModelFillResult:
+    def extract_form(
+        self,
+        documents: list[NormalizedDocument],
+        *,
+        test_type_options: list[str] | None = None,
+        run_dir: Path | None = None,
+    ) -> ModelFillResult:
         if not documents:
             return ModelFillResult(items=[], summary="未收到可抽取文档")
         prompt = self.prompts["document_extract"]
@@ -330,12 +391,41 @@ class QwenRequester:
             documents=documents,
             current_rows=None,
             visible_fields=DOCUMENT_EXTRACT_VISIBLE_FIELDS,
+            test_type_options=test_type_options or [],
         )
         content = self._stream_text(messages, run_dir=run_dir, request_name="文档抽取", max_tokens=12000)
         try:
             return self._parse_form_result(content)
         except json.JSONDecodeError:
             self._save_bad_json_response(content, run_dir=run_dir, prefix="document_extract")
+            raise
+
+    def enrich_form_from_documents(
+        self,
+        documents: list[NormalizedDocument],
+        current_rows: list[FormRow],
+        *,
+        target_fields_by_row: dict[str, list[str]],
+        run_dir: Path | None = None,
+    ) -> ModelFillResult:
+        if not documents:
+            return ModelFillResult(items=[row.model_copy(deep=True) for row in current_rows], summary="未收到可补充文档")
+        if not current_rows or not any(target_fields_by_row.values()):
+            return ModelFillResult(items=[row.model_copy(deep=True) for row in current_rows], summary="无文档定向补充目标字段")
+        prompt = self.prompts["document_targeted_enrich"]
+        messages = self._build_document_enrich_messages(
+            system_prompt=str(prompt["system"]),
+            user_template=str(prompt["user"]),
+            documents=documents,
+            current_rows=current_rows,
+            target_fields_by_row=target_fields_by_row,
+            visible_fields=_document_targeted_visible_fields(target_fields_by_row),
+        )
+        content = self._stream_text(messages, run_dir=run_dir, request_name="文档定向补充", max_tokens=8000)
+        try:
+            return self._parse_form_result(content)
+        except json.JSONDecodeError:
+            self._save_bad_json_response(content, run_dir=run_dir, prefix="document_targeted_enrich")
             raise
 
     def split_batch_excel(self, document: NormalizedDocument, *, run_dir: Path | None = None) -> BatchQuoteSplitResult:
@@ -382,6 +472,221 @@ class QwenRequester:
                 )
             )
         return result
+
+    def split_batch_excel_with_protocol(self, workbook_path: Path, *, run_dir: Path | None = None) -> BatchExcelChunkSplitResult:
+        from backend.quote.excel_protocol import ExcelChunkProtocol, ExcelReadProtocol
+
+        prompt = self.prompts["batch_excel_protocol_split"]
+        read_protocol = ExcelReadProtocol(workbook_path)
+        chunk_protocol = ExcelChunkProtocol(workbook_path, sheet=read_protocol.get_current_sheet())
+        workbook_summary = _excel_workbook_summary(workbook_path)
+        user_text = str(prompt["user"]).replace("$workbook_summary", workbook_summary)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": str(prompt["system"])},
+            {"role": "user", "content": [{"type": "text", "text": user_text}]},
+        ]
+        items: list[BatchExcelChunkItem] = []
+        raw_responses: list[str] = []
+        used_ids: set[str] = set()
+        observed: dict[str, dict[str, set[int]]] = {}
+        finished = False
+
+        if run_dir is not None:
+            append_run_log(run_dir, f"批量Excel协议切分开始: {workbook_path.name}")
+
+        for turn in range(1, 13):
+            content = self._stream_text(messages, run_dir=run_dir, request_name=f"批量Excel协议切分#{turn}", max_tokens=2500)
+            raw_responses.append(content)
+            if run_dir is not None:
+                (run_dir / f"batch_excel_protocol_turn_{turn}.txt").write_text(content, encoding="utf-8")
+            actions = _parse_protocol_actions(content)
+            observations: list[dict[str, Any]] = []
+            has_read_action = any(
+                str(action_payload.get("action") or "").strip() in {"list_sheets", "set_sheet", "get_rows", "get_columns", "get_cell"}
+                for action_payload in actions
+            )
+            created_before_turn = len(items)
+            create_failed_this_turn = False
+
+            if not actions:
+                observations.append({"ok": False, "error": "No valid actions found. Output JSON with an actions array."})
+            for action_payload in actions[:6]:
+                action_name = str(action_payload.get("action") or "").strip()
+                if has_read_action and action_name in {"create_chunk", "finish"}:
+                    observations.append(
+                        {
+                            "ok": False,
+                            "action": action_name,
+                            "error": "Do not mix read actions with create_chunk/finish in the same turn. Review the observations first, then create chunks in the next turn.",
+                        }
+                    )
+                    continue
+                if action_name == "finish" and (len(items) < 2 or create_failed_this_turn):
+                    observations.append(
+                        {
+                            "ok": False,
+                            "action": action_name,
+                            "error": (
+                                "Cannot finish with fewer than 2 chunks. Batch quote mode always requires multiple "
+                                "same-level quote chunks. Split the workbook into separate quote items; use shared_ranges "
+                                "for titles, headers, product/group context, methods, criteria, and other shared rows."
+                            ),
+                        }
+                    )
+                    continue
+                observation = self._execute_excel_protocol_action(
+                    action_payload,
+                    read_protocol=read_protocol,
+                    chunk_protocol=chunk_protocol,
+                    items=items,
+                    used_ids=used_ids,
+                    observed=observed,
+                )
+                observations.append(observation)
+                if action_name == "create_chunk" and not observation.get("ok"):
+                    create_failed_this_turn = True
+                if observation.get("action") == "finish" and observation.get("ok"):
+                    finished = True
+                    break
+
+            if create_failed_this_turn and len(items) > created_before_turn:
+                observations.append(
+                    {
+                        "ok": True,
+                        "action": "create_chunk",
+                        "created_chunks": len(items),
+                        "note": "Some create_chunk actions failed, but successful chunks in the same turn were kept. Retry only the failed ranges.",
+                    }
+                )
+
+            if run_dir is not None:
+                append_run_log(run_dir, f"批量Excel协议切分轮次 {turn}: actions={len(actions)} chunks={len(items)} finished={finished}")
+            if finished:
+                break
+
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content": [{"type": "text", "text": _protocol_observation_text(observations)}]})
+
+        if len(items) < 2:
+            if run_dir is not None:
+                append_run_log(run_dir, f"批量Excel协议切分失败: chunks={len(items)}，批量模式禁止退化为单个报价")
+            raise RuntimeError(
+                "batch_excel_split_requires_multiple_chunks: 批量报价模式必须切分为多份同级报价，不能退化为单个报价或整表报价。"
+            )
+
+        summary = f"协议切分生成 {len(items)} 个子报价" if finished else f"协议切分达到轮次上限，已生成 {len(items)} 个子报价"
+        if run_dir is not None:
+            append_run_log(run_dir, f"批量Excel协议切分完成: chunks={len(items)} finished={finished}")
+        return BatchExcelChunkSplitResult(items=items, summary=summary, raw_response="\n\n".join(raw_responses))
+
+    def _execute_excel_protocol_action(
+        self,
+        payload: dict[str, Any],
+        *,
+        read_protocol: Any,
+        chunk_protocol: Any,
+        items: list[BatchExcelChunkItem],
+        used_ids: set[str],
+        observed: dict[str, dict[str, set[int]]],
+    ) -> dict[str, Any]:
+        action = str(payload.get("action") or "").strip()
+        try:
+            if action == "list_sheets":
+                return {"ok": True, "action": action, "sheets": read_protocol.list_sheets(), "current_sheet": read_protocol.get_current_sheet()}
+            if action == "set_sheet":
+                sheet = str(payload.get("sheet") or "").strip()
+                read_protocol.set_current_sheet(sheet)
+                chunk_protocol.set_current_sheet(sheet)
+                return {"ok": True, "action": action, "current_sheet": sheet}
+            if action == "get_rows":
+                cells = read_protocol.get_rows(int(payload.get("start")), int(payload.get("end")))
+                _mark_observed_rows(observed, read_protocol.get_current_sheet(), int(payload.get("start")), int(payload.get("end")))
+                return {"ok": True, "action": action, "current_sheet": read_protocol.get_current_sheet(), "cells": _serialize_cells(cells)}
+            if action == "get_columns":
+                cells = read_protocol.get_columns(str(payload.get("start") or ""), str(payload.get("end") or ""))
+                _mark_observed_columns(observed, read_protocol.get_current_sheet(), str(payload.get("start") or ""), str(payload.get("end") or ""))
+                return {"ok": True, "action": action, "current_sheet": read_protocol.get_current_sheet(), "cells": _serialize_cells(cells)}
+            if action == "get_cell":
+                cell = read_protocol.get_cell(str(payload.get("address") or ""))
+                _mark_observed_cell(observed, read_protocol.get_current_sheet(), str(payload.get("address") or ""))
+                return {"ok": True, "action": action, "current_sheet": read_protocol.get_current_sheet(), "cell": cell.to_compact_dict()}
+            if action == "create_chunk":
+                shared_ranges = _normalize_string_list(payload.get("shared_ranges"))
+                main_range = _shrink_main_trailing_shared_rows(str(payload.get("main_range") or ""), shared_ranges)
+                current_sheet = chunk_protocol.get_current_sheet()
+                missing_ref = _first_unobserved_range(
+                    observed,
+                    current_sheet,
+                    [
+                        main_range,
+                        *shared_ranges,
+                    ],
+                )
+                if missing_ref:
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "error": f'Range "{missing_ref}" has not been sufficiently observed. Use get_rows for the row span or get_columns for the column span before create_chunk.',
+                    }
+                oversized_error = _oversized_batch_chunk_error(main_range, shared_ranges, chunk_protocol)
+                if oversized_error:
+                    return {"ok": False, "action": action, "error": oversized_error}
+                chunk = chunk_protocol.create_chunk(
+                    main_range=main_range,
+                    shared_ranges=shared_ranges,
+                    label=str(payload.get("label") or "").strip() or None,
+                )
+                overlap_ratio = _shared_main_overlap_ratio(chunk.main_range, chunk.shared_ranges)
+                if overlap_ratio > 0.5:
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "error": (
+                            "shared_ranges overlap too much with main_range. "
+                            "Keep product/sample/project-specific rows or columns in main_range, and put only truly shared title/notes/method rows or columns in shared_ranges."
+                        ),
+                    }
+                chunk_key = (chunk_protocol.get_current_sheet(), chunk.main_range, tuple(chunk.shared_ranges))
+                existing_keys = {
+                    (
+                        str(existing.source_summary).split(" main_range=", 1)[0].replace("sheet=", ""),
+                        existing.chunk.main_range,
+                        tuple(existing.chunk.shared_ranges),
+                    )
+                    for existing in items
+                }
+                if chunk_key in existing_keys:
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "error": f"Duplicate chunk range ignored: main_range={chunk.main_range}, shared_ranges={chunk.shared_ranges}",
+                    }
+                index = len(items) + 1
+                title = chunk.label or f"报价需求{index}"
+                quote_id = _normalize_quote_id(str(payload.get("quote_id") or title), index, used_ids)
+                used_ids.add(quote_id)
+                items.append(
+                    BatchExcelChunkItem(
+                        quote_id=quote_id,
+                        title=title,
+                        source_summary=f"sheet={chunk_protocol.get_current_sheet()} main_range={chunk.main_range} shared_ranges={','.join(chunk.shared_ranges) or '-'}",
+                        chunk=chunk,
+                    )
+                )
+                return {
+                    "ok": True,
+                    "action": action,
+                    "quote_id": quote_id,
+                    "label": title,
+                    "main_range": chunk.main_range,
+                    "shared_ranges": chunk.shared_ranges,
+                    "created_chunks": len(items),
+                }
+            if action == "finish":
+                return {"ok": True, "action": action, "summary": str(payload.get("summary") or "").strip(), "created_chunks": len(items)}
+            return {"ok": False, "action": action or "(missing)", "error": "Unknown action."}
+        except Exception as exc:
+            return {"ok": False, "action": action or "(missing)", "error": str(exc)}
 
     def document_from_batch_item(self, source: NormalizedDocument, item: BatchQuoteSplitItem) -> NormalizedDocument:
         blocks_by_id = {block.block_id: block for block in source.text_blocks}
@@ -489,14 +794,18 @@ class QwenRequester:
         documents: list[NormalizedDocument],
         current_rows: list[FormRow] | None,
         visible_fields: tuple[str, ...],
+        test_type_options: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         manifest = self._document_manifest(documents)
+        document_context = self._document_context(documents)
         document_text = self._document_text(documents)
+        test_type_options_text = _test_type_options_text(test_type_options or [])
         schema_json = json.dumps(_schema_example(visible_fields), ensure_ascii=False, indent=2)
         current_form = json.dumps(self._rows_for_model(current_rows or [], visible_fields), ensure_ascii=False, indent=2)
         user_text = (
             user_template.replace("$document_manifest", manifest)
             .replace("$document_text", document_text)
+            .replace("$test_type_options", test_type_options_text)
             .replace("$schema_json", schema_json)
             .replace(
                 "$rules_text",
@@ -507,6 +816,54 @@ class QwenRequester:
             )
             .replace("$current_form", current_form)
         )
+        if document_context:
+            user_text = self._insert_document_context(user_text, document_context)
+
+        content: list[dict[str, Any]] = []
+        for document in documents:
+            for asset in document.assets:
+                content.append({"type": "image_url", "image_url": {"url": asset.data_url}})
+        content.append({"type": "text", "text": user_text})
+        return [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}]
+
+    def _build_document_enrich_messages(
+        self,
+        *,
+        system_prompt: str,
+        user_template: str,
+        documents: list[NormalizedDocument],
+        current_rows: list[FormRow],
+        target_fields_by_row: dict[str, list[str]],
+        visible_fields: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        manifest = self._document_manifest(documents)
+        document_context = self._document_context(documents)
+        document_text = self._document_text(documents)
+        current_form = json.dumps(self._rows_for_model(current_rows, visible_fields), ensure_ascii=False, indent=2)
+        target_manifest, target_text = self._row_target_fields_text(
+            current_rows,
+            target_fields_by_row,
+            empty_text="(无文档定向补充目标字段)",
+            intro_text="仅允许补充或修正以下字段：",
+        )
+        schema_json = json.dumps(_schema_example(visible_fields), ensure_ascii=False, indent=2)
+        user_text = (
+            user_template.replace("$document_manifest", manifest)
+            .replace("$document_text", document_text)
+            .replace("$current_form", current_form)
+            .replace("$target_manifest", target_manifest)
+            .replace("$target_text", target_text)
+            .replace("$schema_json", schema_json)
+            .replace(
+                "$rules_text",
+                _rules_text(
+                    preserve_row_ids=True,
+                    include_sample_count=True,
+                ),
+            )
+        )
+        if document_context:
+            user_text = self._insert_document_context(user_text, document_context)
 
         content: list[dict[str, Any]] = []
         for document in documents:
@@ -616,6 +973,35 @@ class QwenRequester:
         ]
         return "\n".join(lines) if lines else "- 无"
 
+    def _document_context(self, documents: list[NormalizedDocument]) -> str:
+        sections: list[str] = []
+        for document in documents:
+            metadata = document.metadata or {}
+            hints = _normalize_string_list(metadata.get("extraction_hints"))
+            if not hints:
+                continue
+
+            lines = [f"## {document.source_name}"]
+            chunk_label = str(metadata.get("chunk_label") or "").strip()
+            main_range = str(metadata.get("main_range") or "").strip()
+            shared_ranges = _normalize_string_list(metadata.get("shared_ranges"))
+            if chunk_label:
+                lines.append(f"- chunk_label: {chunk_label}")
+            if main_range:
+                lines.append(f"- main_range: {main_range}")
+            if shared_ranges:
+                lines.append(f"- shared_ranges: {', '.join(shared_ranges)}")
+            lines.extend(f"- {hint}" for hint in hints)
+            sections.append("\n".join(lines).strip())
+        return "\n\n".join(sections).strip()
+
+    def _insert_document_context(self, user_text: str, document_context: str) -> str:
+        context_block = f"\n\n文档处理说明：\n{document_context}"
+        marker = "\n\n结构化正文："
+        if marker in user_text:
+            return user_text.replace(marker, f"{context_block}{marker}", 1)
+        return f"{context_block.lstrip()}\n\n{user_text}"
+
     def _document_text(self, documents: list[NormalizedDocument]) -> str:
         sections: list[str] = []
         for document in documents:
@@ -640,7 +1026,7 @@ class QwenRequester:
         return "\n\n".join(sections).strip()
 
     def _rows_for_model(self, rows: list[FormRow], visible_fields: tuple[str, ...]) -> dict[str, Any]:
-        return {"items": [{field: getattr(row, field) for field in visible_fields} for row in rows]}
+        return {"items": [{field: _jsonable_value(getattr(row, field)) for field in visible_fields} for row in rows]}
 
     def _row_evidence_text(self, rows: list[FormRow]) -> tuple[str, str]:
         manifest_lines: list[str] = []
@@ -664,6 +1050,9 @@ class QwenRequester:
         self,
         rows: list[FormRow],
         target_fields_by_row: dict[str, list[str]],
+        *,
+        empty_text: str = "(无标准补充目标字段)",
+        intro_text: str = "仅允许补充以下字段：",
     ) -> tuple[str, str]:
         manifest_lines: list[str] = []
         sections: list[str] = []
@@ -673,9 +1062,9 @@ class QwenRequester:
             label = row.raw_test_type or row.canonical_test_type or row.row_id
             lines = [f"## row_id={row.row_id} | test={label}"]
             if not targets:
-                lines.append("(无标准补充目标字段)")
+                lines.append(empty_text)
             else:
-                lines.extend(["仅允许补充以下字段：", *[f"- {field}" for field in targets]])
+                lines.extend([intro_text, *[f"- {field}" for field in targets]])
             sections.append("\n".join(lines))
         manifest = "\n".join(manifest_lines) if manifest_lines else "- 无"
         return manifest, "\n\n".join(sections).strip()
@@ -697,6 +1086,15 @@ class QwenRequester:
         logger.info("开始模型请求: stage=%s model=%s images=%s text_chars=%s", request_name, self.model, image_count, text_length)
         if run_dir is not None:
             append_run_log(run_dir, f"开始模型请求: {request_name} | model={self.model} | images={image_count} | text_chars={text_length}")
+            prompt_path = self._save_model_prompt(
+                messages,
+                run_dir=run_dir,
+                request_name=request_name,
+                max_tokens=max_tokens,
+                image_count=image_count,
+                text_length=text_length,
+            )
+            append_run_log(run_dir, f"模型Prompt已保存: {prompt_path.relative_to(run_dir)}")
         completion = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -729,6 +1127,34 @@ class QwenRequester:
         if run_dir is not None:
             append_run_log(run_dir, f"模型请求成功: {request_name} | chunks={chunk_count} | response_chars={len(text)}")
         return text
+
+    def _save_model_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        run_dir: Path,
+        request_name: str,
+        max_tokens: int,
+        image_count: int,
+        text_length: int,
+    ) -> Path:
+        prompts_dir = run_dir / "model_prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        safe_name = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", request_name).strip("_") or "model_request"
+        path = prompts_dir / f"{timestamp}_{safe_name}.txt"
+        path.write_text(
+            _render_model_prompt_log(
+                messages,
+                request_name=request_name,
+                model=self.model,
+                max_tokens=max_tokens,
+                image_count=image_count,
+                text_length=text_length,
+            ),
+            encoding="utf-8",
+        )
+        return path
 
     def _save_bad_json_response(self, content: str, *, run_dir: Path | None, prefix: str) -> None:
         if run_dir is None:
@@ -819,6 +1245,241 @@ class QwenRequester:
                 )
         logger.info("标准字段发现解析完成: rows=%s summary=%s", len(items), summary or "-")
         return StandardFieldDiscoveryResult(items=items, summary=summary, raw_response=content)
+
+
+def _excel_workbook_summary(workbook_path: Path) -> str:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(workbook_path, data_only=True, read_only=True)
+    lines = [f"- file={workbook_path.name}", f"- sheet_count={len(workbook.sheetnames)}"]
+    for sheet in workbook.worksheets:
+        lines.append(
+            f"- sheet={sheet.title} | max_row={sheet.max_row} | max_col={sheet.max_column} "
+            f"(A-{get_column_letter(sheet.max_column)})"
+        )
+    workbook.close()
+    return "\n".join(lines)
+
+
+def _render_model_prompt_log(
+    messages: list[dict[str, Any]],
+    *,
+    request_name: str,
+    model: str,
+    max_tokens: int,
+    image_count: int,
+    text_length: int,
+) -> str:
+    lines = [
+        f"request_name: {request_name}",
+        f"model: {model}",
+        "temperature: 0.1",
+        f"max_tokens: {max_tokens}",
+        "modalities: text",
+        f"image_count: {image_count}",
+        f"text_chars: {text_length}",
+        "",
+    ]
+    for message_index, message in enumerate(messages, start=1):
+        role = str(message.get("role") or "")
+        lines.append(f"===== message {message_index} | role={role} =====")
+        content = message.get("content")
+        if isinstance(content, str):
+            lines.append(content)
+            lines.append("")
+            continue
+        if isinstance(content, list):
+            for part_index, part in enumerate(content, start=1):
+                if not isinstance(part, dict):
+                    lines.append(f"--- part {part_index} | raw ---")
+                    lines.append(str(part))
+                    continue
+                part_type = str(part.get("type") or "")
+                lines.append(f"--- part {part_index} | type={part_type} ---")
+                if part_type == "text":
+                    lines.append(str(part.get("text") or ""))
+                    continue
+                if part_type == "image_url":
+                    image_url = part.get("image_url")
+                    url = ""
+                    if isinstance(image_url, dict):
+                        url = str(image_url.get("url") or "")
+                    lines.append(f"[image_url omitted] chars={len(url)} prefix={url[:48]}")
+                    continue
+                lines.append(json.dumps(part, ensure_ascii=False, default=str))
+            lines.append("")
+            continue
+        lines.append(str(content))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _parse_protocol_actions(content: str) -> list[dict[str, Any]]:
+    json_text = _extract_json_text(content)
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError:
+        try:
+            payload = json.loads(_repair_protocol_json(json_text))
+        except json.JSONDecodeError:
+            return []
+    raw_actions: Any
+    if isinstance(payload, dict) and isinstance(payload.get("actions"), list):
+        raw_actions = payload["actions"]
+    elif isinstance(payload, dict) and payload.get("action"):
+        raw_actions = [payload]
+    elif isinstance(payload, list):
+        raw_actions = payload
+    else:
+        raw_actions = []
+    return [item for item in raw_actions if isinstance(item, dict)]
+
+
+def _repair_protocol_json(text: str) -> str:
+    repaired = text.strip()
+    repaired = re.sub(r'("end"\s*:\s*"[^"]+")\s*\]', r"\1}", repaired)
+    repaired = re.sub(r'("start"\s*:\s*"[^"]+")\s*\]', r"\1}", repaired)
+    return repaired
+
+
+def _observed_bucket(observed: dict[str, dict[str, set[int]]], sheet: str) -> dict[str, set[int]]:
+    return observed.setdefault(sheet, {"rows": set(), "cols": set()})
+
+
+def _mark_observed_rows(observed: dict[str, dict[str, set[int]]], sheet: str, start: int, end: int) -> None:
+    if start > end:
+        return
+    _observed_bucket(observed, sheet)["rows"].update(range(max(1, start), end + 1))
+
+
+def _mark_observed_columns(observed: dict[str, dict[str, set[int]]], sheet: str, start: str, end: str) -> None:
+    try:
+        start_col = column_index_from_string(str(start or "").strip().upper())
+        end_col = column_index_from_string(str(end or "").strip().upper())
+    except ValueError:
+        return
+    if start_col > end_col:
+        return
+    _observed_bucket(observed, sheet)["cols"].update(range(start_col, end_col + 1))
+
+
+def _mark_observed_cell(observed: dict[str, dict[str, set[int]]], sheet: str, address: str) -> None:
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(address)
+    except ValueError:
+        return
+    _observed_bucket(observed, sheet)["rows"].update(range(min_row, max_row + 1))
+    _observed_bucket(observed, sheet)["cols"].update(range(min_col, max_col + 1))
+
+
+def _first_unobserved_range(observed: dict[str, dict[str, set[int]]], sheet: str, refs: list[str]) -> str:
+    bucket = observed.get(sheet) or {"rows": set(), "cols": set()}
+    observed_rows = bucket["rows"]
+    observed_cols = bucket["cols"]
+    for ref in refs:
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(ref)
+        except ValueError:
+            continue
+        row_span_observed = all(row in observed_rows for row in range(min_row, max_row + 1))
+        col_span_observed = all(col in observed_cols for col in range(min_col, max_col + 1))
+        if not row_span_observed and not col_span_observed:
+            return ref
+    return ""
+
+
+def _shared_main_overlap_ratio(main_range: str, shared_ranges: list[str]) -> float:
+    try:
+        main_min_col, main_min_row, main_max_col, main_max_row = range_boundaries(main_range)
+    except ValueError:
+        return 0.0
+    main_area = (main_max_col - main_min_col + 1) * (main_max_row - main_min_row + 1)
+    if main_area <= 0:
+        return 0.0
+    overlap_cells: set[tuple[int, int]] = set()
+    for ref in shared_ranges:
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(ref)
+        except ValueError:
+            continue
+        for row in range(max(main_min_row, min_row), min(main_max_row, max_row) + 1):
+            for col in range(max(main_min_col, min_col), min(main_max_col, max_col) + 1):
+                overlap_cells.add((row, col))
+    return len(overlap_cells) / main_area
+
+
+def _oversized_batch_chunk_error(main_range: str, shared_ranges: list[str], chunk_protocol: Any) -> str:
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(main_range)
+        sheet = chunk_protocol._sheet()
+    except Exception:
+        return ""
+    sheet_area = max(1, int(sheet.max_row or 1) * int(sheet.max_column or 1))
+    main_area = (max_col - min_col + 1) * (max_row - min_row + 1)
+    row_ratio = (max_row - min_row + 1) / max(1, int(sheet.max_row or 1))
+    col_ratio = (max_col - min_col + 1) / max(1, int(sheet.max_column or 1))
+    covers_most_sheet = main_area / sheet_area >= 0.55
+    spans_many_rows_and_cols = (max_row - min_row + 1) >= max(4, int((sheet.max_row or 1) * 0.5)) and (
+        max_col - min_col + 1
+    ) >= max(4, int((sheet.max_column or 1) * 0.5))
+    spans_full_width_block = col_ratio >= 0.75 and row_ratio >= 0.5 and (max_row - min_row + 1) >= 4
+    if not (covers_most_sheet and spans_many_rows_and_cols) and not spans_full_width_block:
+        return ""
+    shared_text = ", ".join(shared_ranges) if shared_ranges else "(none)"
+    return (
+        f'main_range "{main_range}" covers most of the sheet and is likely merging multiple independent quote items. '
+        "Batch quote mode must split the workbook into multiple same-level quote chunks; do not create a single full-table/full-series chunk. "
+        "Keep each quote-specific product area or test row in its own main_range, and move shared titles, headers, methods, criteria, "
+        f"addresses, group/product context, and other common rows into shared_ranges. Current shared_ranges={shared_text}."
+    )
+
+
+def _shrink_main_trailing_shared_rows(main_range: str, shared_ranges: list[str]) -> str:
+    try:
+        main_min_col, main_min_row, main_max_col, main_max_row = range_boundaries(main_range)
+    except ValueError:
+        return main_range
+    adjusted_max_row = main_max_row
+    for ref in shared_ranges:
+        try:
+            shared_min_col, shared_min_row, shared_max_col, shared_max_row = range_boundaries(ref)
+        except ValueError:
+            continue
+        covers_main_columns = shared_min_col <= main_min_col and main_max_col <= shared_max_col
+        overlaps_trailing_rows = main_min_row < shared_min_row <= adjusted_max_row <= shared_max_row
+        if covers_main_columns and overlaps_trailing_rows:
+            adjusted_max_row = shared_min_row - 1
+    if adjusted_max_row == main_max_row or adjusted_max_row < main_min_row:
+        return main_range
+    return f"{get_column_letter(main_min_col)}{main_min_row}:{get_column_letter(main_max_col)}{adjusted_max_row}"
+
+
+def _protocol_observation_text(observations: list[dict[str, Any]]) -> str:
+    payload = {"observations": observations}
+    return (
+        "工具执行结果如下。请继续观察或创建 chunk；如果已创建完所有独立报价需求，请输出 finish。\n"
+        f"{json.dumps(payload, ensure_ascii=False, default=str)}"
+    )
+
+
+def _serialize_cells(cells: list[Any], *, limit: int = 500) -> dict[str, Any]:
+    serialized: list[dict[str, Any]] = []
+    omitted_empty_cells = 0
+    truncated_cells = 0
+    for cell in cells:
+        if getattr(cell, "value", None) is None and not getattr(cell, "is_merged", False):
+            omitted_empty_cells += 1
+            continue
+        if len(serialized) >= limit:
+            truncated_cells += 1
+            continue
+        serialized.append(cell.to_compact_dict())
+    return {
+        "items": serialized,
+        "returned": len(serialized),
+        "omitted_empty_cells": omitted_empty_cells,
+        "truncated_cells": truncated_cells,
+    }
 
 
 def _normalize_discovered_fields(value: Any, supported_fields: set[str]) -> list[str]:
