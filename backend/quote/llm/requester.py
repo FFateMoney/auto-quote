@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -191,6 +192,12 @@ class BatchExcelChunkSplitResult:
 
 
 @dataclass(slots=True)
+class VisionQuoteListResult:
+    items: list[dict[str, Any]]
+    raw_response: str = ""
+
+
+@dataclass(slots=True)
 class StandardFieldDiscoveryItem:
     row_id: str
     discovered_standard_fields: list[str]
@@ -308,6 +315,24 @@ def _extract_json_text(text: str) -> str:
     clean = _strip_code_fence(text)
     match = re.search(r"(\{.*\}|\[.*\])", clean, re.DOTALL)
     return match.group(1) if match else clean
+
+
+def _parse_vision_quote_list(content: str) -> list[dict[str, Any]]:
+    payload = json.loads(_extract_json_text(content))
+    if not isinstance(payload, list):
+        raise json.JSONDecodeError("vision quote list root must be an array", content, 0)
+    fields = ("experiment_type", "length", "width", "height", "standard_no", "sample_quantity")
+    items: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        normalized = {field: item.get(field) for field in fields}
+        for field in ("experiment_type", "length", "width", "height", "standard_no"):
+            if normalized[field] is not None:
+                text = str(normalized[field]).strip()
+                normalized[field] = text or None
+        items.append(normalized)
+    return items
 
 
 def _normalize_item_payload(item: dict[str, Any]) -> dict[str, Any]:
@@ -578,6 +603,26 @@ class QwenRequester:
         if run_dir is not None:
             append_run_log(run_dir, f"批量Excel协议切分完成: chunks={len(items)} finished={finished}")
         return BatchExcelChunkSplitResult(items=items, summary=summary, raw_response="\n\n".join(raw_responses))
+
+    def split_batch_excel_with_vision_quote_list(self, image_paths: list[Path], *, run_dir: Path | None = None) -> VisionQuoteListResult:
+        if not image_paths:
+            return VisionQuoteListResult(items=[], raw_response="")
+        prompt = self.prompts["batch_excel_vision_quote_list"]
+        user_text = str(prompt["user"]).replace("$image_count", str(len(image_paths)))
+        content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+        for image_path in image_paths:
+            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}})
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": str(prompt["system"])},
+            {"role": "user", "content": content},
+        ]
+        text = self._stream_text(messages, run_dir=run_dir, request_name="批量Excel视觉切分", max_tokens=8000)
+        try:
+            return VisionQuoteListResult(items=_parse_vision_quote_list(text), raw_response=text)
+        except json.JSONDecodeError:
+            self._save_bad_json_response(text, run_dir=run_dir, prefix="batch_excel_vision_quote_list")
+            raise
 
     def _execute_excel_protocol_action(
         self,

@@ -52,7 +52,11 @@ class PpStructureV3Engine:
                 use_chart_recognition=s.use_chart_recognition,
                 use_region_detection=s.use_region_detection,
                 use_table_orientation_classify=s.use_table_orientation_classify,
-                use_ocr_results_with_table_cells=False,
+                use_ocr_results_with_table_cells=s.use_ocr_results_with_table_cells,
+                use_wired_table_cells_trans_to_html=s.use_wired_table_cells_trans_to_html,
+                use_wireless_table_cells_trans_to_html=s.use_wireless_table_cells_trans_to_html,
+                use_e2e_wired_table_rec_model=s.use_e2e_wired_table_rec_model,
+                use_e2e_wireless_table_rec_model=s.use_e2e_wireless_table_rec_model,
                 format_block_content=s.format_block_content,
                 markdown_ignore_labels=s.markdown_ignore_labels,
             )

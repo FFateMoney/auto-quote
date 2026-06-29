@@ -61,6 +61,12 @@ def health() -> dict[str, object]:
         "output_dir": str(s.output_dir),
         "pp_structurev3_importable": importable,
         "pp_structurev3_import_error": import_error,
+        "use_table_orientation_classify": s.use_table_orientation_classify,
+        "use_ocr_results_with_table_cells": s.use_ocr_results_with_table_cells,
+        "use_wired_table_cells_trans_to_html": s.use_wired_table_cells_trans_to_html,
+        "use_wireless_table_cells_trans_to_html": s.use_wireless_table_cells_trans_to_html,
+        "use_e2e_wired_table_rec_model": s.use_e2e_wired_table_rec_model,
+        "use_e2e_wireless_table_rec_model": s.use_e2e_wireless_table_rec_model,
     }
 
 

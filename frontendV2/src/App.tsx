@@ -148,7 +148,7 @@ export default function App() {
     setActiveStageId(stages.some((stage) => stage.stage_id === preferredStageId) ? preferredStageId : stages.at(-1)?.stage_id ?? next.current_stage);
   }
 
-  async function handleStart(files: File[], quoteMode: QuoteMode) {
+  async function handleStart(files: File[], quoteMode: QuoteMode, batchFastMode = false) {
     if (files.length === 0) {
       setError('请先选择至少一个 Word、Excel、PDF 或图片文件。');
       return;
@@ -160,7 +160,7 @@ export default function App() {
     setSubmitting(true);
     setError('');
     try {
-      const next = await createRun(files, quoteMode);
+      const next = await createRun(files, quoteMode, batchFastMode);
       setRunState(next);
       syncActivePointers(next, '', '');
       setView('dashboard');
@@ -395,7 +395,7 @@ export default function App() {
             <UploadSection
               error={error}
               isSubmitting={submitting}
-              onStart={(files, quoteMode) => void handleStart(files, quoteMode)}
+              onStart={(files, quoteMode, batchFastMode) => void handleStart(files, quoteMode, batchFastMode)}
               onStartFromText={(text) => void handleStartFromText(text)}
               onLoadHistory={(runId) => void handleLoadHistory(runId)}
             />

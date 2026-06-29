@@ -5,6 +5,7 @@ quote_pipeline:
   document_targeted_enrich_enabled: true
   standard_enrich_enabled: true
   equipment_reselect_after_standard_enabled: true
+  batch_split_strategy: "excel_protocol"  # excel_protocol | vision_quote_list
 
 auth:
   enabled: true
@@ -48,6 +49,11 @@ services:
     pp_structure_use_formula_recognition: false
     pp_structure_use_chart_recognition: false
     pp_structure_use_table_orientation_classify: false
+    pp_structure_use_ocr_results_with_table_cells: true
+    pp_structure_use_wired_table_cells_trans_to_html: false
+    pp_structure_use_wireless_table_cells_trans_to_html: false
+    pp_structure_use_e2e_wired_table_rec_model: false
+    pp_structure_use_e2e_wireless_table_rec_model: true
 
 integrations:
   aiword_script_path: "/my_storage/chen/auto-quote-engine/AIWord/scripts/ai_edit.py"

@@ -27,6 +27,7 @@ class QuoteSettings:
     document_targeted_enrich_enabled: bool
     standard_enrich_enabled: bool
     equipment_reselect_after_standard_enabled: bool
+    batch_split_strategy: str
     ocr_service_base_url: str
     indexing_service_base_url: str
     qwen_api_key: str
@@ -69,6 +70,11 @@ def get_settings() -> QuoteSettings:
             or nested(cfg, "quote_pipeline", "equipment_reselect_after_standard_enabled", default=True),
             default=True,
         ),
+        batch_split_strategy=str(
+            os.environ.get("QUOTE_BATCH_SPLIT_STRATEGY")
+            or nested(cfg, "batch_quote", "split_strategy", default="")
+            or nested(cfg, "quote_pipeline", "batch_split_strategy", default="excel_protocol")
+        ).strip(),
         ocr_service_base_url=str(_s("QUOTE_OCR_SERVICE_BASE_URL", "ocr_service_base_url", default="http://127.0.0.1:8001")).rstrip("/"),
         indexing_service_base_url=str(_s("QUOTE_INDEXING_SERVICE_BASE_URL", "indexing_service_base_url", default="http://127.0.0.1:8003")).rstrip("/"),
         qwen_api_key=str(_s("QWEN_API_KEY", "qwen", "api_key") or nested(cfg, "qwen", "api_key", default="")),

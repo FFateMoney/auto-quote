@@ -70,10 +70,13 @@ export async function logout(): Promise<void> {
 
 export type QuoteMode = 'single' | 'batch';
 
-export async function createRun(files: File[], quoteMode: QuoteMode = 'single'): Promise<RunState> {
+export async function createRun(files: File[], quoteMode: QuoteMode = 'single', batchFastMode = false): Promise<RunState> {
   const formData = new FormData();
   files.forEach((file) => formData.append('files', file));
   formData.append('quote_mode', quoteMode);
+  if (quoteMode === 'batch') {
+    formData.append('batch_fast_mode', batchFastMode ? 'true' : 'false');
+  }
   const response = await fetchWithTimeout(
     `${API_BASE}/runs`,
     {

@@ -10,6 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from backend.common.logging import append_run_log
 from backend.common.auth import (
     clear_session_cookie,
     get_auth_settings,
@@ -189,7 +190,11 @@ def list_runs() -> dict[str, object]:
 
 
 @router.post("/api/runs")
-async def create_run(files: list[UploadFile] = File(...), quote_mode: str = Form("single")):
+async def create_run(
+    files: list[UploadFile] = File(...),
+    quote_mode: str = Form("single"),
+    batch_fast_mode: bool = Form(False),
+):
     if not files:
         raise HTTPException(status_code=400, detail="missing_files")
     if quote_mode not in {"single", "batch"}:
@@ -224,7 +229,19 @@ async def create_run(files: list[UploadFile] = File(...), quote_mode: str = Form
                 local_path=str(stored_path),
             )
         )
-    return get_orchestrator().run(run_id=run_id, uploaded_documents=uploaded_documents, quote_mode=quote_mode).model_dump()
+    batch_split_strategy = ""
+    if quote_mode == "batch":
+        batch_split_strategy = "vision_quote_list" if batch_fast_mode else "excel_protocol"
+        append_run_log(
+            run_dir,
+            f"批量快速模式: {'开启' if batch_fast_mode else '关闭'} | strategy={batch_split_strategy}",
+        )
+    return get_orchestrator().run(
+        run_id=run_id,
+        uploaded_documents=uploaded_documents,
+        quote_mode=quote_mode,
+        batch_split_strategy=batch_split_strategy,
+    ).model_dump()
 
 
 @router.post("/api/runs/text")

@@ -10,7 +10,7 @@ from docx import Document
 from backend.common.config import PROJECT_ROOT
 from backend.common.logging import append_run_log
 from backend.common.models import NormalizedDocument
-from backend.quote.adapters.excel_workbook import WorkbookExcelAdapter
+from backend.quote.batch_splitters import build_batch_splitter
 from backend.quote.catalog import CatalogGateway
 from backend.quote.document_enrich import (
     build_document_target_fields,
@@ -23,6 +23,7 @@ from backend.quote.llm.requester import QwenRequester
 from backend.quote.models import BatchQuoteItem, FormRow, FormStageSnapshot, ResumeRequest, RunArtifacts, RunState, UploadedDocument
 from backend.quote.plugins.registry import PluginRegistry
 from backend.quote.quoter import Quoter
+from backend.quote.row_adapters import DocumentExtractPayload, DocumentExtractRowAdapter, RowAdapterContext
 from backend.quote.run_store import RunStore
 from backend.quote.stages import (
     DOCUMENT_EXTRACTED,
@@ -65,7 +66,14 @@ class QuoteOrchestrator:
     # Public
     # ------------------------------------------------------------------
 
-    def run(self, *, run_id: str, uploaded_documents: list[UploadedDocument], quote_mode: str = "single") -> RunState:
+    def run(
+        self,
+        *,
+        run_id: str,
+        uploaded_documents: list[UploadedDocument],
+        quote_mode: str = "single",
+        batch_split_strategy: str = "",
+    ) -> RunState:
         from backend.quote.settings import get_settings
         run_dir = get_settings().run_dir / run_id
         run_state_path = run_dir / "run_state.json"
@@ -88,7 +96,14 @@ class QuoteOrchestrator:
             documents, preprocess_notes = self._preprocess(state, run_dir)
             self._log(run_dir, "文档解析完成，共 %s 份", len(documents))
             if state.quote_mode == "batch":
-                self._run_batch_pipeline(state, documents, preprocess_notes, run_dir, run_state_path)
+                self._run_batch_pipeline(
+                    state,
+                    documents,
+                    preprocess_notes,
+                    run_dir,
+                    run_state_path,
+                    split_strategy=batch_split_strategy,
+                )
             else:
                 status = self._run_document_pipeline(
                     owner=state,
@@ -231,12 +246,25 @@ class QuoteOrchestrator:
         preprocess_notes: list[str],
         run_dir: Path,
         run_state_path: Path,
+        *,
+        split_strategy: str = "",
     ) -> None:
+        from backend.quote.settings import get_settings
+
         if len(documents) != 1 or documents[0].source_kind != "excel":
             raise RuntimeError("batch_mode_requires_single_excel")
         workbook_path = Path(state.uploaded_documents[0].local_path or state.uploaded_documents[0].stored_path)
-        split = self.requester.split_batch_excel_with_protocol(workbook_path, run_dir=run_dir)
+        settings = get_settings()
+        strategy = split_strategy.strip() or settings.batch_split_strategy
+        splitter = build_batch_splitter(strategy, requester=self.requester)
+        self._log(run_dir, "批量切分策略: %s", splitter.strategy_id)
+        split = splitter.split(workbook_path, run_dir=run_dir)
+        if len(split.items) < 2:
+            raise RuntimeError(
+                "batch_excel_split_requires_multiple_chunks: 批量报价模式必须切分为多份同级报价，不能退化为单个报价或整表报价。"
+            )
         notes = list(preprocess_notes)
+        notes.extend(split.notes)
         if split.summary:
             notes.append(f"批量拆分摘要：{split.summary}")
         state.batch_quotes = [
@@ -250,12 +278,20 @@ class QuoteOrchestrator:
             quote.status = "running"
             self._save(run_state_path, state)
             try:
-                quote_doc = self._document_from_batch_chunk(split_item, source_path=workbook_path, run_dir=run_dir)
-                quote.status = self._run_document_pipeline(
+                row_result = split_item.row_adapter.to_rows(
+                    split_item.row_payload,
+                    context=RowAdapterContext(
+                        requester=self.requester,
+                        run_dir=run_dir,
+                        test_type_options=self._test_type_options(),
+                    ),
+                )
+                quote.status = self._run_rows_pipeline(
                     owner=quote,
-                    documents=[quote_doc],
+                    rows=row_result.rows,
+                    documents=row_result.documents,
                     run_dir=run_dir,
-                    initial_notes=[*notes, f"子报价：{quote.title}", f"来源：{quote.source_summary}"],
+                    initial_notes=[*notes, *row_result.notes, f"子报价：{quote.title}", f"来源：{quote.source_summary}"],
                     quote_id=quote.quote_id,
                     quote_title=quote.title,
                     save_path=run_state_path,
@@ -273,33 +309,6 @@ class QuoteOrchestrator:
         self._refresh_batch_summary(state)
         self._save(run_state_path, state)
 
-    def _document_from_batch_chunk(self, split_item: object, *, source_path: Path, run_dir: Path) -> NormalizedDocument:
-        adapter = WorkbookExcelAdapter()
-        chunk = getattr(split_item, "chunk")
-        source_name = f"{getattr(split_item, 'title') or getattr(split_item, 'quote_id')}.xlsx"
-        payload = adapter.extract(
-            chunk.workbook,
-            source_name=source_name,
-            run_dir=run_dir,
-            source_stem=str(getattr(split_item, "quote_id") or "batch_quote"),
-            chunk_label=chunk.label,
-            main_range=chunk.main_range,
-            shared_ranges=chunk.shared_ranges,
-        )
-        return NormalizedDocument(
-            document_id=str(getattr(split_item, "quote_id")),
-            source_name=source_name,
-            source_kind="excel_chunk_workbook",
-            original_path=str(source_path),
-            text_blocks=payload.text_blocks,
-            assets=payload.assets,
-            metadata={
-                **payload.metadata,
-                "batch_quote_id": str(getattr(split_item, "quote_id")),
-                "batch_source_summary": str(getattr(split_item, "source_summary")),
-            },
-        )
-
     def _run_document_pipeline(
         self,
         *,
@@ -312,18 +321,44 @@ class QuoteOrchestrator:
         save_path: Path | None = None,
         state: RunState | None = None,
     ) -> str:
+        row_result = DocumentExtractRowAdapter().to_rows(
+            DocumentExtractPayload(documents=list(documents), notes=list(initial_notes)),
+            context=RowAdapterContext(
+                requester=self.requester,
+                run_dir=run_dir,
+                test_type_options=self._test_type_options(),
+            ),
+        )
+        return self._run_rows_pipeline(
+            owner=owner,
+            rows=row_result.rows,
+            documents=row_result.documents,
+            run_dir=run_dir,
+            initial_notes=row_result.notes,
+            quote_id=quote_id,
+            quote_title=quote_title,
+            save_path=save_path,
+            state=state,
+        )
+
+    def _run_rows_pipeline(
+        self,
+        *,
+        owner: RunState | BatchQuoteItem,
+        rows: list[FormRow],
+        documents: list[NormalizedDocument],
+        run_dir: Path,
+        initial_notes: list[str],
+        quote_id: str = "",
+        quote_title: str = "",
+        save_path: Path | None = None,
+        state: RunState | None = None,
+    ) -> str:
         from backend.quote.settings import get_settings
 
         settings = get_settings()
-        extraction = self.requester.extract_form(
-            documents,
-            test_type_options=self._test_type_options(),
-            run_dir=run_dir,
-        )
-        rows = self._stamp_rows(extraction.items, quote_id=quote_id, quote_title=quote_title)
+        rows = self._stamp_rows(rows, quote_id=quote_id, quote_title=quote_title)
         notes = list(initial_notes)
-        if extraction.summary:
-            notes.append(f"模型摘要：{extraction.summary}")
         self._upsert(owner, DOCUMENT_EXTRACTED, rows, notes)
         self._log(run_dir, "文件抽取完成，共 %s 行", len(rows))
         self._maybe_save(save_path, state)

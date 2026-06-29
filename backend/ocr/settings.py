@@ -43,6 +43,11 @@ class OcrSettings:
     use_formula_recognition: bool
     use_chart_recognition: bool
     use_table_orientation_classify: bool
+    use_ocr_results_with_table_cells: bool
+    use_wired_table_cells_trans_to_html: bool
+    use_wireless_table_cells_trans_to_html: bool
+    use_e2e_wired_table_rec_model: bool
+    use_e2e_wireless_table_rec_model: bool
 
 
 @lru_cache(maxsize=1)
@@ -143,5 +148,45 @@ def get_settings() -> OcrSettings:
                 "pp_structure_use_table_orientation_classify",
             ),
             default=False,
+        ),
+        use_ocr_results_with_table_cells=as_bool(
+            _structure(
+                "OCR_USE_OCR_RESULTS_WITH_TABLE_CELLS",
+                "use_ocr_results_with_table_cells",
+                "pp_structure_use_ocr_results_with_table_cells",
+            ),
+            default=True,
+        ),
+        use_wired_table_cells_trans_to_html=as_bool(
+            _structure(
+                "OCR_USE_WIRED_TABLE_CELLS_TRANS_TO_HTML",
+                "use_wired_table_cells_trans_to_html",
+                "pp_structure_use_wired_table_cells_trans_to_html",
+            ),
+            default=False,
+        ),
+        use_wireless_table_cells_trans_to_html=as_bool(
+            _structure(
+                "OCR_USE_WIRELESS_TABLE_CELLS_TRANS_TO_HTML",
+                "use_wireless_table_cells_trans_to_html",
+                "pp_structure_use_wireless_table_cells_trans_to_html",
+            ),
+            default=False,
+        ),
+        use_e2e_wired_table_rec_model=as_bool(
+            _structure(
+                "OCR_USE_E2E_WIRED_TABLE_REC_MODEL",
+                "use_e2e_wired_table_rec_model",
+                "pp_structure_use_e2e_wired_table_rec_model",
+            ),
+            default=False,
+        ),
+        use_e2e_wireless_table_rec_model=as_bool(
+            _structure(
+                "OCR_USE_E2E_WIRELESS_TABLE_REC_MODEL",
+                "use_e2e_wireless_table_rec_model",
+                "pp_structure_use_e2e_wireless_table_rec_model",
+            ),
+            default=True,
         ),
     )

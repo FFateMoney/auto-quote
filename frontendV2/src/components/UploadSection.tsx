@@ -13,7 +13,7 @@ import type {RunHistoryItem} from '../types';
 interface UploadSectionProps {
   error: string;
   isSubmitting: boolean;
-  onStart: (files: File[], quoteMode: QuoteMode) => void;
+  onStart: (files: File[], quoteMode: QuoteMode, batchFastMode?: boolean) => void;
   onStartFromText: (text: string) => void;
   onLoadHistory: (runId: string) => void;
 }
@@ -30,6 +30,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
   const [historyItems, setHistoryItems] = React.useState<RunHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [historyError, setHistoryError] = React.useState('');
+  const [batchFastMode, setBatchFastMode] = React.useState(false);
   const trimmedText = plainText.trim();
 
   React.useEffect(() => {
@@ -123,6 +124,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
             onClick={() => {
               setQuoteMode('single');
               setSelectedFiles([]);
+              setBatchFastMode(false);
             }}
           >
             单项报价
@@ -211,15 +213,31 @@ export const UploadSection: React.FC<UploadSectionProps> = ({error, isSubmitting
 
         {error ? <div className="mt-5 rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-left text-sm font-medium text-red-700">{error}</div> : null}
 
-        <button
-          type="button"
-          onClick={() => inputMode === 'file' ? onStart(selectedFiles, quoteMode) : onStartFromText(trimmedText)}
-          disabled={(inputMode === 'file' ? selectedFiles.length === 0 || (quoteMode === 'batch' && selectedFiles[0]?.name.toLowerCase().endsWith('.xlsx') !== true) : trimmedText.length === 0 || trimmedText.length > 100_000) || isSubmitting}
-          className="btn-primary w-full mt-8 disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
-        >
-          {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
-          {isSubmitting ? '处理中...' : '开始智能报价'}
-        </button>
+        <div className={`mt-8 ${quoteMode === 'batch' ? 'flex items-stretch gap-3' : ''}`}>
+          <button
+            type="button"
+            onClick={() => inputMode === 'file' ? onStart(selectedFiles, quoteMode, batchFastMode) : onStartFromText(trimmedText)}
+            disabled={(inputMode === 'file' ? selectedFiles.length === 0 || (quoteMode === 'batch' && selectedFiles[0]?.name.toLowerCase().endsWith('.xlsx') !== true) : trimmedText.length === 0 || trimmedText.length > 100_000) || isSubmitting}
+            className={`btn-primary disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2 ${quoteMode === 'batch' ? 'flex-1' : 'w-full'}`}
+          >
+            {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : null}
+            {isSubmitting ? '处理中...' : '开始智能报价'}
+          </button>
+          {quoteMode === 'batch' ? (
+            <button
+              type="button"
+              aria-pressed={batchFastMode}
+              disabled={isSubmitting}
+              onClick={() => setBatchFastMode((value) => !value)}
+              className={`flex w-36 shrink-0 items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${batchFastMode ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-500 hover:border-indigo-200 hover:text-slate-700'}`}
+            >
+              <span className="text-xs font-bold leading-tight">快速模式</span>
+              <span className={`relative h-5 w-9 rounded-full transition-colors ${batchFastMode ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${batchFastMode ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </span>
+            </button>
+          ) : null}
+        </div>
       </div>
     </motion.div>
   );
