@@ -1,0 +1,9 @@
+{
+  "name": "auto-quote-codex-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned Codex runtime for the Auto Quote document-analysis agent.",
+  "dependencies": {
+    "@openai/codex": "0.148.0"
+  }
+}

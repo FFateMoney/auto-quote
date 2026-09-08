@@ -16,6 +16,8 @@ env/
 frontend/web/node_modules/
 frontend/web/dist/
 frontend/web/.env.local
+frontendV2/node_modules/
+frontendV2/dist/
 
 # IDE & Editor
 .vscode/
@@ -35,14 +37,17 @@ backend/dev/config.yaml
 *.p8
 
 # Data & Runtime (生成数据不上传)
-runtime/runs/*
+/runtime/
+/.tmp-tests/
+/backendV2/core/runtime/
+/backendV2/agent_workspace/runtime/
+/backendV2/agent_workspace/temp_page*.png
+/backendV2/agent_workspace/codex_home/*
+!/backendV2/agent_workspace/codex_home/quote-agent.config.toml
+!/backendV2/agent_workspace/codex_home/model-catalog.local.json
 data/
 qdrant_data/
 test_file/*
-
-# ⚠️  重要：sync_state 文件夹保存流水线同步状态
-# 请勿删除 data/*/sync_state/ 中的内容，否则会导致全量重建或重复入库
-# 如果被误删，恢复方法：重新运行 sync 命令会自动重建状态（但会重新处理所有文件）
 
 # IDE Files
 .claudeignore

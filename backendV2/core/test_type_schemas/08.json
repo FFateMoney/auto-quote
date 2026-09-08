@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "test_type_id": 8,
+  "test_type_name": "机械冲击",
+  "fields": [
+    {
+      "name": "raw_test_type",
+      "label": "源文件试验类型原文",
+      "value_type": "string"
+    },
+    {
+      "name": "standard_codes",
+      "label": "标准号",
+      "value_type": "string_array"
+    },
+    {
+      "name": "standard_document_section",
+      "label": "标准文档章节",
+      "value_type": "string"
+    },
+    {
+      "name": "pricing_mode",
+      "label": "计价方式",
+      "value_type": "string"
+    },
+    {
+      "name": "pricing_quantity",
+      "label": "计价数量",
+      "value_type": "number"
+    },
+    {
+      "name": "sample_count",
+      "label": "样品数量",
+      "value_type": "number"
+    },
+    {
+      "name": "length_mm",
+      "label": "样品长度",
+      "value_type": "number",
+      "unit": "mm"
+    },
+    {
+      "name": "width_mm",
+      "label": "样品宽度",
+      "value_type": "number",
+      "unit": "mm"
+    },
+    {
+      "name": "height_mm",
+      "label": "样品高度",
+      "value_type": "number",
+      "unit": "mm"
+    },
+    {
+      "name": "max_load_kg",
+      "label": "样品总重量",
+      "value_type": "number",
+      "unit": "kg"
+    },
+    {
+      "name": "accel_min",
+      "label": "最小加速度",
+      "value_type": "number",
+      "unit": "m/s2"
+    },
+    {
+      "name": "accel_max",
+      "label": "最大加速度",
+      "value_type": "number",
+      "unit": "m/s2"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+# Isolated configuration for the quotation document-analysis agent.
+model_provider = "dashscope_quote_agent"
+model = "qwen3.7-plus"
+model_reasoning_effort = "low"
+
+[model_providers.dashscope_quote_agent]
+name = "DashScope quotation agent"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"

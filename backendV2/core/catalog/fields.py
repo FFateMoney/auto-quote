@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+
+DEVICE_CAPABILITY_FIELDS = (
+    "max_volume_m3",
+    "max_length_mm",
+    "max_width_mm",
+    "max_height_mm",
+    "temperature_min_c",
+    "temperature_max_c",
+    "humidity_min_rh",
+    "humidity_max_rh",
+    "max_temperature_change_rate_c_per_min",
+    "water_temperature_min_c",
+    "water_temperature_max_c",
+    "water_flow_min_l_per_min",
+    "water_flow_max_l_per_min",
+    "irradiance_min_w_per_m3",
+    "irradiance_max_w_per_m3",
+    "max_load_kg",
+    "other_limits",
+    "frequency_min_hz",
+    "frequency_max_hz",
+    "acceleration_min_m_per_s2",
+    "acceleration_max_m_per_s2",
+    "max_peak_to_peak_displacement_mm",
+    "power_kwh",
+)
+
+
+TEST_PROJECT_CAPABILITY_FIELDS = (
+    "max_length_mm",
+    "max_width_mm",
+    "max_height_mm",
+    "temperature_min_c",
+    "temperature_max_c",
+    "humidity_min_rh",
+    "humidity_max_rh",
+    "max_temperature_change_rate_c_per_min",
+    "water_temperature_min_c",
+    "water_temperature_max_c",
+    "water_flow_min_l_per_min",
+    "water_flow_max_l_per_min",
+    "irradiance_min_w_per_m3",
+    "irradiance_max_w_per_m3",
+    "max_load_kg",
+    "frequency_min_hz",
+    "frequency_max_hz",
+    "acceleration_min_m_per_s2",
+    "acceleration_max_m_per_s2",
+    "max_peak_to_peak_displacement_mm",
+)

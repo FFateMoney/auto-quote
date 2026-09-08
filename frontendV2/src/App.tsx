@@ -4,17 +4,17 @@
  */
 
 import React from 'react';
-import {HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, RotateCcw, Settings, Trash2, X} from 'lucide-react';
-import {API_BASE, buildArtifactUrl, createRun, createRunFromText, exportRun, fetchAuthSession, fetchRun, loginWithPassword, logout, toErrorMessage, updateBatchQuoteVisibility} from './api';
+import {Download, HelpCircle, KeyRound, LayoutDashboard, Loader2, LogOut, RotateCcw, Save, Settings, Trash2, X} from 'lucide-react';
+import {API_BASE, buildArtifactUrl, createRun, downloadAgentSourceFile, exportAgentQuotation, exportRun, fetchAgentQuotationResults, fetchAgentRun, fetchAuthSession, fetchRun, loginWithPassword, logout, saveAgentQuotationSnapshot, saveAgentQuotationsToHistory, setAgentQuotationBaseFeeOverride, toErrorMessage, updateBatchQuoteVisibility} from './api';
 import logoUrl from './assets/logo_cut.png';
 import smallLogoUrl from './assets/small_logo.png';
 import {EquipmentTables} from './components/EquipmentTables';
+import {DatabaseManager} from './components/DatabaseManager';
 import {StatusDashboard} from './components/StatusDashboard';
 import {StructuredReportGrid} from './components/StructuredReportGrid';
-import {TestTypeAliasManager} from './components/TestTypeAliasManager';
 import {UploadSection} from './components/UploadSection';
 import type {BatchQuoteItem, FormStageSnapshot, RunState, UploadedDocument} from './types';
-import type {QuoteMode} from './api';
+import type {AgentQuotationItem, AgentQuotationResults, AgentRunSnapshot} from './api';
 
 type View = 'upload' | 'dashboard' | 'settings';
 type PreviewKind = 'image' | 'pdf';
@@ -32,6 +32,19 @@ export default function App() {
   const [authError, setAuthError] = React.useState('');
   const [view, setView] = React.useState<View>('upload');
   const [runState, setRunState] = React.useState<RunState | null>(null);
+  const [agentRun, setAgentRun] = React.useState<AgentRunSnapshot | null>(null);
+  const [agentQuotationResults, setAgentQuotationResults] = React.useState<AgentQuotationResults | null>(null);
+  const [agentResultsOpen, setAgentResultsOpen] = React.useState(false);
+  const [agentResultsLoading, setAgentResultsLoading] = React.useState(false);
+  const [agentResultsError, setAgentResultsError] = React.useState('');
+  const [agentResultsReloadKey, setAgentResultsReloadKey] = React.useState(0);
+  const [agentSourceDownloading, setAgentSourceDownloading] = React.useState(false);
+  const [agentExporting, setAgentExporting] = React.useState(false);
+  const [agentHistorySaving, setAgentHistorySaving] = React.useState(false);
+  const [agentBaseFeeUpdating, setAgentBaseFeeUpdating] = React.useState(false);
+  const [agentHistorySaveMessage, setAgentHistorySaveMessage] = React.useState('');
+  const [agentRequoting, setAgentRequoting] = React.useState(false);
+  const [activeAgentQuoteId, setActiveAgentQuoteId] = React.useState('');
   const [activeStageId, setActiveStageId] = React.useState('');
   const [activeQuoteId, setActiveQuoteId] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
@@ -66,9 +79,56 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
+    if (!agentRun || agentRun.status === 'submitted' || agentRun.status === 'agent_failed' || agentRun.status === 'submission_rejected') {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void fetchAgentRun(agentRun.run_id).then(setAgentRun).catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [agentRun]);
+
+  React.useEffect(() => {
+    if (!agentRun || agentRun.status !== 'submitted') {
+      return;
+    }
+    let cancelled = false;
+    setAgentResultsLoading(true);
+    setAgentResultsError('');
+    void fetchAgentQuotationResults(agentRun.run_id)
+      .then((results) => {
+        if (cancelled) {
+          return;
+        }
+        setAgentQuotationResults(results);
+        setActiveAgentQuoteId((current) => results.items.some((item) => item.quote_id === current) ? current : results.items[0]?.quote_id ?? '');
+        setAgentResultsOpen(true);
+      })
+      .catch((fetchError) => {
+        if (!cancelled) {
+          setAgentResultsError(toErrorMessage(fetchError, '无法获取报价结果'));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAgentResultsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentRun?.run_id, agentRun?.status, agentResultsReloadKey]);
+
+  React.useEffect(() => {
     function handleAuthExpired() {
       setAuthenticated(false);
       setRunState(null);
+      setAgentRun(null);
+      setAgentQuotationResults(null);
+      setAgentResultsOpen(false);
+      setAgentResultsError('');
+      setAgentHistorySaveMessage('');
+      setActiveAgentQuoteId('');
       setView('upload');
       setError('');
       setAuthError('登录已过期，请重新输入密码。');
@@ -124,6 +184,11 @@ export default function App() {
     return visibleStages.find((stage) => stage.stage_id === activeStageId) ?? visibleStages.at(-1);
   }, [activeStageId, visibleStages]);
 
+  const activeAgentQuote = React.useMemo(() => {
+    const quotations = agentQuotationResults?.items ?? [];
+    return quotations.find((item) => item.quote_id === activeAgentQuoteId) ?? quotations[0];
+  }, [activeAgentQuoteId, agentQuotationResults]);
+
   React.useEffect(() => {
     if (!previewDocument && !stageDialogOpen) {
       return undefined;
@@ -148,43 +213,25 @@ export default function App() {
     setActiveStageId(stages.some((stage) => stage.stage_id === preferredStageId) ? preferredStageId : stages.at(-1)?.stage_id ?? next.current_stage);
   }
 
-  async function handleStart(files: File[], quoteMode: QuoteMode, batchFastMode = false) {
+  async function handleStart(files: File[]) {
     if (files.length === 0) {
-      setError('请先选择至少一个 Word、Excel、PDF 或图片文件。');
-      return;
-    }
-    if (quoteMode === 'batch' && (files.length !== 1 || !files[0].name.toLowerCase().endsWith('.xlsx'))) {
-      setError('批量报价只支持上传 1 个 Excel（.xlsx）文件。');
+      setError('请先提供一个报价需求文档或粘贴报价需求文本。');
       return;
     }
     setSubmitting(true);
     setError('');
     try {
-      const next = await createRun(files, quoteMode, batchFastMode);
-      setRunState(next);
-      syncActivePointers(next, '', '');
+      const next = await createRun(files);
+      setRunState(null);
+      setAgentRun(next);
+      setAgentQuotationResults(null);
+      setAgentResultsOpen(false);
+      setAgentResultsError('');
+      setAgentHistorySaveMessage('');
+      setActiveAgentQuoteId('');
       setView('dashboard');
     } catch (fetchError) {
       setError(toErrorMessage(fetchError, `${API_BASE}/runs 无法创建运行`));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleStartFromText(text: string) {
-    if (!text.trim()) {
-      setError('请先输入或粘贴报价需求文本。');
-      return;
-    }
-    setSubmitting(true);
-    setError('');
-    try {
-      const next = await createRunFromText(text);
-      setRunState(next);
-      syncActivePointers(next, '', '');
-      setView('dashboard');
-    } catch (fetchError) {
-      setError(toErrorMessage(fetchError, `${API_BASE}/runs/text 无法创建运行`));
     } finally {
       setSubmitting(false);
     }
@@ -197,9 +244,13 @@ export default function App() {
     setSubmitting(true);
     setError('');
     try {
-      const next = await fetchRun(runId);
-      setRunState(next);
-      syncActivePointers(next, '', '');
+      const next = await fetchAgentRun(runId);
+      setRunState(null);
+      setAgentRun(next);
+      setAgentQuotationResults(null);
+      setAgentResultsOpen(false);
+      setAgentResultsError('');
+      setActiveAgentQuoteId('');
       setView('dashboard');
     } catch (fetchError) {
       setError(toErrorMessage(fetchError, '无法加载历史报价'));
@@ -222,6 +273,145 @@ export default function App() {
       setError(toErrorMessage(fetchError, '无法刷新当前运行状态'));
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  async function refreshAgentRun() {
+    if (!agentRun || refreshing) {
+      return;
+    }
+    setRefreshing(true);
+    setError('');
+    try {
+      setAgentRun(await fetchAgentRun(agentRun.run_id));
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, '无法刷新当前运行状态'));
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function replaceAgentQuotation(nextQuotation: AgentQuotationItem) {
+    setAgentQuotationResults((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        items: current.items.map((quotation) => quotation.quote_id === nextQuotation.quote_id ? nextQuotation : quotation),
+      };
+    });
+  }
+
+  async function saveAgentQuotation(
+    nextQuotation: Pick<AgentQuotationItem, 'quote_id' | 'test_project_id' | 'fixed_fields' | 'special_fields' | 'selected_device_code' | 'base_fee_override'>,
+    selectedDeviceCode: string | null = null,
+  ) {
+    if (!agentRun || agentRequoting) {
+      return;
+    }
+    setAgentRequoting(true);
+    setError('');
+    try {
+      const saved = await saveAgentQuotationSnapshot(
+        agentRun.run_id,
+        nextQuotation.quote_id,
+        nextQuotation,
+        selectedDeviceCode,
+      );
+      replaceAgentQuotation(saved);
+      setAgentHistorySaveMessage('');
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, '无法保存报价修改'));
+    } finally {
+      setAgentRequoting(false);
+    }
+  }
+
+  async function handleAgentQuotationRecalculation(selectedDeviceCode: string | null = null) {
+    if (!agentRun || !activeAgentQuote || agentRequoting) {
+      return;
+    }
+    await saveAgentQuotation(activeAgentQuote, selectedDeviceCode);
+  }
+
+  async function handleAgentExport(quoteId = '') {
+    if (!agentRun || agentExporting) {
+      return;
+    }
+    setAgentExporting(true);
+    setError('');
+    try {
+      const blob = await exportAgentQuotation(agentRun.run_id, quoteId);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = quoteId ? `报价单_${agentRun.run_id}_${quoteId}.docx` : `报价单_${agentRun.run_id}.docx`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, '导出报价单失败'));
+    } finally {
+      setAgentExporting(false);
+    }
+  }
+
+  async function handleSaveAgentQuotationsToHistory() {
+    if (!agentRun || !agentQuotationResults || agentHistorySaving) {
+      return;
+    }
+    setAgentHistorySaving(true);
+    setAgentHistorySaveMessage('');
+    setError('');
+    try {
+      const result = await saveAgentQuotationsToHistory(agentRun.run_id);
+      setAgentHistorySaveMessage(`已保存 ${result.saved_count} 项到历史报价库。`);
+    } catch (saveError) {
+      setError(toErrorMessage(saveError, '无法保存至历史报价库'));
+    } finally {
+      setAgentHistorySaving(false);
+    }
+  }
+
+  async function handleSetAgentQuotationBaseFeeOverride(enabled: boolean) {
+    if (!agentRun || !agentQuotationResults || agentBaseFeeUpdating || agentRequoting) {
+      return;
+    }
+    setAgentBaseFeeUpdating(true);
+    setError('');
+    try {
+      const results = await setAgentQuotationBaseFeeOverride(agentRun.run_id, enabled);
+      setAgentQuotationResults(results);
+      setAgentHistorySaveMessage('');
+    } catch (saveError) {
+      setError(toErrorMessage(saveError, '更新基本金设置失败'));
+    } finally {
+      setAgentBaseFeeUpdating(false);
+    }
+  }
+
+  async function handleAgentSourceDownload() {
+    if (!agentRun || agentSourceDownloading) {
+      return;
+    }
+    setAgentSourceDownloading(true);
+    setError('');
+    try {
+      const blob = await downloadAgentSourceFile(agentRun.run_id);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = agentRun.uploaded_file;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (fetchError) {
+      setError(toErrorMessage(fetchError, '无法下载源文件'));
+    } finally {
+      setAgentSourceDownloading(false);
     }
   }
 
@@ -314,6 +504,10 @@ export default function App() {
     } finally {
       setAuthenticated(false);
       setRunState(null);
+      setAgentRun(null);
+      setAgentQuotationResults(null);
+      setAgentResultsOpen(false);
+      setActiveAgentQuoteId('');
       setView('upload');
       setAuthSubmitting(false);
     }
@@ -344,7 +538,7 @@ export default function App() {
               setError('');
             }}
           />
-          <NavItem icon={LayoutDashboard} active={view === 'dashboard'} onClick={() => runState && setView('dashboard')} disabled={!runState} />
+          <NavItem icon={LayoutDashboard} active={view === 'dashboard'} onClick={() => (runState || agentRun) && setView('dashboard')} disabled={!runState && !agentRun} />
           <NavItem icon={Settings} active={view === 'settings'} onClick={() => setView('settings')} />
         </nav>
         <div className="mt-auto">
@@ -363,7 +557,7 @@ export default function App() {
             </span>
           </h1>
           <div className="relative z-10 ml-auto flex items-center gap-3">
-            {view === 'dashboard' && runState ? (
+            {view === 'dashboard' && (runState || agentRun) ? (
               <>
                 <button
                   type="button"
@@ -395,12 +589,39 @@ export default function App() {
             <UploadSection
               error={error}
               isSubmitting={submitting}
-              onStart={(files, quoteMode, batchFastMode) => void handleStart(files, quoteMode, batchFastMode)}
-              onStartFromText={(text) => void handleStartFromText(text)}
+              onStart={(files) => void handleStart(files)}
               onLoadHistory={(runId) => void handleLoadHistory(runId)}
             />
           ) : view === 'settings' ? (
-            <TestTypeAliasManager />
+            <DatabaseManager />
+          ) : agentRun ? (
+            <AgentRunDashboard
+              run={agentRun}
+              error={error}
+              refreshing={refreshing}
+              onRefresh={() => void refreshAgentRun()}
+              quotationResults={agentQuotationResults}
+              quotationResultsOpen={agentResultsOpen}
+              quotationResultsLoading={agentResultsLoading}
+              quotationResultsError={agentResultsError}
+              onReloadQuotationResults={() => setAgentResultsReloadKey((current) => current + 1)}
+              activeQuotation={activeAgentQuote}
+              activeQuotationId={activeAgentQuoteId}
+              onSelectQuotation={setActiveAgentQuoteId}
+              onQuotationUpdated={saveAgentQuotation}
+              onRecalculateQuotation={(deviceCode) => void handleAgentQuotationRecalculation(deviceCode)}
+              requoting={agentRequoting}
+              onDownloadSource={() => void handleAgentSourceDownload()}
+              sourceDownloading={agentSourceDownloading}
+              onExportAll={() => void handleAgentExport()}
+              onExportSingle={() => activeAgentQuote && void handleAgentExport(activeAgentQuote.quote_id)}
+              exporting={agentExporting}
+              onSaveToHistory={() => void handleSaveAgentQuotationsToHistory()}
+              historySaving={agentHistorySaving}
+              historySaveMessage={agentHistorySaveMessage}
+              onSetBaseFeeZero={(enabled) => void handleSetAgentQuotationBaseFeeOverride(enabled)}
+              baseFeeUpdating={agentBaseFeeUpdating}
+            />
           ) : runState && displayRunState ? (
             <div className="max-w-screen-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
               {error ? <div className="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div> : null}
@@ -716,6 +937,262 @@ function LoginScreen({
       </form>
     </main>
   );
+}
+
+function AgentRunDashboard({
+  run,
+  error,
+  refreshing,
+  onRefresh,
+  quotationResults,
+  quotationResultsOpen,
+  quotationResultsLoading,
+  quotationResultsError,
+  onReloadQuotationResults,
+  activeQuotation,
+  activeQuotationId,
+  onSelectQuotation,
+  onQuotationUpdated,
+  onRecalculateQuotation,
+  requoting,
+  onDownloadSource,
+  sourceDownloading,
+  onExportAll,
+  onExportSingle,
+  exporting,
+  onSaveToHistory,
+  historySaving,
+  historySaveMessage,
+  onSetBaseFeeZero,
+  baseFeeUpdating,
+}: {
+  run: AgentRunSnapshot;
+  error: string;
+  refreshing: boolean;
+  onRefresh: () => void;
+  quotationResults: AgentQuotationResults | null;
+  quotationResultsOpen: boolean;
+  quotationResultsLoading: boolean;
+  quotationResultsError: string;
+  onReloadQuotationResults: () => void;
+  activeQuotation: AgentQuotationItem | undefined;
+  activeQuotationId: string;
+  onSelectQuotation: (quoteId: string) => void;
+  onQuotationUpdated: (quotation: AgentQuotationItem) => Promise<void>;
+  onRecalculateQuotation: (deviceCode?: string | null) => void;
+  requoting: boolean;
+  onDownloadSource: () => void;
+  sourceDownloading: boolean;
+  onExportAll: () => void;
+  onExportSingle: () => void;
+  exporting: boolean;
+  onSaveToHistory: () => void;
+  historySaving: boolean;
+  historySaveMessage: string;
+  onSetBaseFeeZero: (enabled: boolean) => void;
+  baseFeeUpdating: boolean;
+}) {
+  const isRunning = run.status === 'created' || run.status === 'agent_running';
+  const baseFeeZeroEnabled = quotationResults?.items.length
+    ? quotationResults.items.every((quotation) => quotation.base_fee_override === 0)
+    : false;
+  return (
+    <section className="mx-auto max-w-screen-2xl space-y-8 pt-10">
+      {error ? <div className="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div> : null}
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <AgentRunStat label="运行 ID" value={run.run_id} />
+          <AgentRunStat label="整体状态" value={formatAgentRunStatus(run.status)} status />
+          <AgentRunStat label="最近更新" value={formatTimestamp(run.updated_at)} />
+          <AgentRunStat label="原始文件" value={run.uploaded_file} />
+        </div>
+        <div className="glass-panel p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="mb-2 text-[10px] font-bold uppercase text-slate-400">运行操作</p>
+              <p className="text-sm font-medium text-slate-700">
+                {run.status === 'submitted'
+                  ? quotationResultsLoading
+                    ? '报价已完成，正在加载报价结果。'
+                    : quotationResultsError
+                      ? '报价已完成，但加载报价结果失败。'
+                      : '报价已完成，可查看、修改和下载当前结果。'
+                  : '报价正在执行，请等待运行完成。'}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="btn-secondary inline-flex items-center gap-2 text-xs" onClick={onRefresh} disabled={refreshing}>
+                {refreshing ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+                刷新状态
+              </button>
+              {run.status === 'submitted' && (quotationResultsLoading || quotationResultsError) ? (
+                <button
+                  type="button"
+                  className="btn-secondary inline-flex items-center gap-2 text-xs"
+                  onClick={onReloadQuotationResults}
+                  disabled={quotationResultsLoading}
+                >
+                  {quotationResultsLoading ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+                  {quotationResultsLoading ? '正在加载结果...' : '重新加载结果'}
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {quotationResultsError ? <div className="mt-4 rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{quotationResultsError}</div> : null}
+          {quotationResultsOpen && quotationResults ? (
+            <div className="mt-4 grid gap-4 border-t border-slate-100 pt-4 lg:grid-cols-2">
+              <AgentRunLinkGroup title="导出文件">
+                <button type="button" className="btn-secondary inline-flex items-center gap-2 text-xs" onClick={onDownloadSource} disabled={sourceDownloading}>
+                  {sourceDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  {sourceDownloading ? '正在下载...' : '下载源文件'}
+                </button>
+                <button type="button" className="btn-secondary inline-flex items-center gap-2 text-xs" onClick={onExportAll} disabled={exporting || !quotationResults.items.some((item) => item.total_price !== null)}>
+                  {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  {exporting ? '正在导出...' : '全部导出'}
+                </button>
+                <button type="button" className="btn-secondary inline-flex items-center gap-2 text-xs" onClick={onExportSingle} disabled={exporting || activeQuotation?.total_price === null || activeQuotation === undefined}>
+                  <Download size={14} />
+                  单个导出
+                </button>
+              </AgentRunLinkGroup>
+              <AgentRunLinkGroup title="报价数量">
+                <span className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">{quotationResults.items.length} 项</span>
+              </AgentRunLinkGroup>
+              <AgentRunLinkGroup title="报价调整">
+                <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+                  <span>基本金归0</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={baseFeeZeroEnabled}
+                    aria-label="基本金归0"
+                    className={`relative h-5 w-9 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${baseFeeZeroEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                    onClick={() => onSetBaseFeeZero(!baseFeeZeroEnabled)}
+                    disabled={baseFeeUpdating || requoting || quotationResults.items.length === 0}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${baseFeeZeroEnabled ? 'translate-x-4' : ''}`} />
+                  </button>
+                  {baseFeeUpdating ? <Loader2 size={14} className="animate-spin text-indigo-500" /> : null}
+                </div>
+              </AgentRunLinkGroup>
+              <AgentRunLinkGroup title="历史报价库">
+                <button type="button" className="btn-secondary inline-flex items-center gap-2 text-xs" onClick={onSaveToHistory} disabled={historySaving || quotationResults.items.length === 0}>
+                  {historySaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                  {historySaving ? '正在保存...' : '保存至历史报价库'}
+                </button>
+                {historySaveMessage ? <span className="inline-flex items-center px-1 text-xs font-medium text-emerald-600">{historySaveMessage}</span> : null}
+              </AgentRunLinkGroup>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {quotationResultsOpen && quotationResults ? (
+        <div className="space-y-4">
+          <AgentQuoteSwitcher quotations={quotationResults.items} activeQuoteId={activeQuotationId} onSelect={onSelectQuotation} />
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-3">
+            <h2 className="text-2xl font-bold text-slate-800">结构化报价报表</h2>
+            <p className="text-sm font-medium text-slate-400">STRUCTURED QUOTE REPORT</p>
+          </div>
+          {activeQuotation ? (
+            <>
+              <StructuredReportGrid quotationResult={activeQuotation} onUpdated={onQuotationUpdated} saving={requoting} />
+              <div className="flex justify-end">
+                <button type="button" className="btn-primary inline-flex items-center gap-2 text-xs" onClick={() => onRecalculateQuotation()} disabled={requoting}>
+                  {requoting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                  {requoting ? '正在筛选设备...' : '按当前字段筛选设备并报价'}
+                </button>
+              </div>
+              <EquipmentTables
+                quotationResult={activeQuotation}
+                selecting={requoting}
+                onSelectDevice={(deviceCode) => onRecalculateQuotation(deviceCode)}
+              />
+            </>
+          ) : <div className="glass-panel px-5 py-8 text-center text-sm font-medium text-slate-400">该运行未生成可展示的报价表。</div>}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AgentRunStat({label, value, status = false}: {label: string; value: string; status?: boolean}) {
+  return (
+    <div className="glass-panel flex min-w-0 items-center gap-4 p-4">
+      <div className="min-w-0">
+        <p className="mb-0.5 text-[10px] font-bold uppercase text-slate-400">{label}</p>
+        {status ? <span className="status-badge border border-emerald-200 bg-emerald-100 text-emerald-700">{value}</span> : <p className="truncate text-sm font-semibold text-slate-700" title={value}>{value}</p>}
+      </div>
+    </div>
+  );
+}
+
+function AgentRunLinkGroup({title, children}: {title: string; children: React.ReactNode}) {
+  return (
+    <div>
+      <p className="mb-2 text-[10px] font-bold uppercase text-slate-400">{title}</p>
+      <div className="flex flex-wrap gap-2">{children}</div>
+    </div>
+  );
+}
+
+function AgentQuoteSwitcher({
+  quotations,
+  activeQuoteId,
+  onSelect,
+}: {
+  quotations: AgentQuotationItem[];
+  activeQuoteId: string;
+  onSelect: (quoteId: string) => void;
+}) {
+  return (
+    <div className="glass-panel p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-slate-800">报价切换</h2>
+        </div>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">{quotations.length} 项</span>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {quotations.map((quotation, index) => {
+          const active = quotation.quote_id === activeQuoteId;
+          const rawTestType = quotation.fixed_fields.raw_test_type;
+          const title = rawTestType == null || rawTestType === '' ? `报价 ${index + 1}` : String(rawTestType);
+          return (
+            <button
+              key={quotation.quote_id}
+              type="button"
+              onClick={() => onSelect(quotation.quote_id)}
+              className={`min-w-56 rounded-lg border px-3 py-2 text-left transition-colors ${active ? 'border-indigo-200 bg-indigo-50 text-indigo-800' : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200'}`}
+            >
+              <div className="truncate text-sm font-bold">{title}</div>
+              <div className="mt-1 truncate text-xs opacity-75">{quotation.quote_id}</div>
+              <div className="mt-1 text-xs opacity-75">总价 {formatAgentCurrency(quotation.total_price)}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatAgentCurrency(value: number | null): string {
+  return value === null ? 'null' : `¥${value.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+
+function formatAgentRunStatus(status: string) {
+  const labels: Record<string, string> = {
+    created: '等待执行',
+    agent_running: '正在报价',
+    submitted: '报价完成',
+    submission_rejected: '提交未通过',
+    agent_failed: '报价失败',
+  };
+  return labels[status] ?? status;
+}
+
+function formatTimestamp(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', {hour12: false});
 }
 
 function NavItem({

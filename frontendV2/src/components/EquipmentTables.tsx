@@ -6,6 +6,7 @@
 import React from 'react';
 import {Info, Loader2, RefreshCw, XCircle} from 'lucide-react';
 import {resumeRun, toErrorMessage} from '../api';
+import {getQuotationFieldLabel} from '../quotationFieldLabels';
 import type {EquipmentProfile, FormRow, FormStageSnapshot, RunState} from '../types';
 
 const EQUIPMENT_ATTR_LABELS: Record<string, string> = {
@@ -37,11 +38,35 @@ const EQUIPMENT_ATTR_LABELS: Record<string, string> = {
   water_flow_max: '最大流量',
 };
 
-export const EquipmentTables: React.FC<{
+type LegacyEquipmentTablesProps = {
   activeStage?: FormStageSnapshot;
   runState: RunState;
   onUpdated: (next: RunState) => void;
-}> = ({activeStage, runState, onUpdated}) => {
+};
+
+type DynamicEquipmentCandidate = {
+  device_code: string;
+  power_kwh: number | null;
+  capabilities: Record<string, unknown>;
+};
+
+type DynamicEquipmentTablesProps = {
+  quotationResult: {
+    selected_device_code: string | null;
+    eligible_devices: DynamicEquipmentCandidate[];
+  };
+  selecting: boolean;
+  onSelectDevice: (deviceCode: string) => void;
+};
+
+export const EquipmentTables: React.FC<LegacyEquipmentTablesProps | DynamicEquipmentTablesProps> = (props) => {
+  if ('quotationResult' in props) {
+    return <DynamicEquipmentTables {...props} />;
+  }
+  return <LegacyEquipmentTables {...props} />;
+};
+
+const LegacyEquipmentTables: React.FC<LegacyEquipmentTablesProps> = ({activeStage, runState, onUpdated}) => {
   const [submittingKey, setSubmittingKey] = React.useState('');
   const [error, setError] = React.useState('');
   const rows = activeStage?.items ?? [];
@@ -204,6 +229,75 @@ export const EquipmentTables: React.FC<{
         )}
       </section>
     </div>
+  );
+};
+
+const DynamicEquipmentTables: React.FC<DynamicEquipmentTablesProps> = ({quotationResult, selecting, onSelectDevice}) => {
+  const devices = quotationResult.eligible_devices;
+  return (
+    <section className="mb-12">
+      <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <h3 className="flex items-center gap-2 text-xl font-bold text-slate-800">
+          匹配设备表
+          <span className="rounded-full border border-indigo-100 bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-600">{devices.length} 台候选</span>
+        </h3>
+        <p className="text-xs italic text-slate-400">候选设备已按功耗从低到高排序，可直接切换当前报价设备。</p>
+      </div>
+      {devices.length === 0 ? (
+        <div className="rounded-lg border-2 border-dashed border-slate-100 p-10 text-center text-sm italic text-slate-400">当前条件下没有可用设备。</div>
+      ) : (
+        <div className="glass-panel overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left">
+              <thead className="border-b border-slate-200 bg-slate-50/80">
+                <tr>
+                  <th className="px-6 py-4 text-[11px] font-bold uppercase text-slate-400">设备编号</th>
+                  <th className="px-6 py-4 text-[11px] font-bold uppercase text-slate-400">能力明细</th>
+                  <th className="px-6 py-4 text-right text-[11px] font-bold uppercase text-slate-400">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {devices.map((device) => {
+                  const selected = device.device_code === quotationResult.selected_device_code;
+                  const capabilities = Object.entries(device.capabilities).filter(([, value]) => value != null);
+                  return (
+                    <tr key={device.device_code} className="group transition-colors hover:bg-slate-50/50">
+                      <td className="px-6 py-4 align-top">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm font-bold text-slate-800">{device.device_code}</span>
+                          {selected ? <span className="rounded border border-emerald-100 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold text-emerald-600">当前选中</span> : null}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 align-top">
+                        <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
+                          <span className="text-slate-700"><span className="text-slate-400">{getQuotationFieldLabel('power_kwh')}:</span> {formatValue(device.power_kwh)}</span>
+                          {capabilities.map(([fieldName, value]) => (
+                            <span key={fieldName} className="text-slate-700"><span className="text-slate-400">{getQuotationFieldLabel(fieldName)}:</span> {formatValue(value)}</span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-right align-top">
+                        {!selected ? (
+                          <button
+                            type="button"
+                            className="btn-secondary ml-auto inline-flex items-center gap-2 px-3 py-1.5 text-xs"
+                            disabled={selecting}
+                            onClick={() => onSelectDevice(device.device_code)}
+                          >
+                            {selecting ? <Loader2 size={12} className="animate-spin text-indigo-500" /> : <RefreshCw size={12} className="text-indigo-500" />}
+                            选用并重新报价
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
   );
 };
 

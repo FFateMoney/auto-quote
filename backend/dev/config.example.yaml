@@ -18,12 +18,12 @@ auth:
 services:
   quote_service:
     host: "127.0.0.1"
-    port: 8000
-    ocr_service_base_url: "http://127.0.0.1:8001"
+    port: 7887
+    ocr_service_base_url: "http://127.0.0.1:7998"
 
   ocr_service:
     host: "127.0.0.1"
-    port: 8001
+    port: 7998
     paddle_mode: "python"
     paddle_server_url: "http://127.0.0.1:8118/v1"
     paddle_use_doc_parser: true

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tool_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$(cd -- "$tool_dir/../../../.." && pwd)"
+export PYTHONPATH="$project_root${PYTHONPATH:+:$PYTHONPATH}"
+core_python="${QUOTE_V2_CORE_PYTHON:-python}"
+exec "$core_python" -m backendV2.core.cli "$@"

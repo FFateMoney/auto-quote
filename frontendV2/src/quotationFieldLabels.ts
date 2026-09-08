@@ -1,0 +1,47 @@
+export const QUOTATION_FIELD_LABELS: Record<string, string> = {
+  raw_test_type: '原始试验类型',
+  standard_type: '标准类型',
+  test_item: '测试项目',
+  standard_code: '标准号',
+  standard_document_section: '标准文档章节',
+  pricing_mode: '计价方式',
+  specification: '规格',
+  pricing_quantity: '计价数量',
+  sample_count: '样品数量',
+  length_mm: '样品长度(mm)',
+  width_mm: '样品宽度(mm)',
+  height_mm: '样品高度(mm)',
+  unit_price: '单价',
+  total_price: '总价',
+  base_fee: '基本金',
+  test_project_id: '测试项目 ID',
+  power_kwh: '功耗(kWh)',
+
+  temperature_min_c: '最低温度(C)',
+  temperature_max_c: '最高温度(C)',
+  humidity_min_rh: '最低湿度(%RH)',
+  humidity_max_rh: '最高湿度(%RH)',
+  max_temperature_change_rate_c_per_min: '最大温度变化速率(C/min)',
+  water_temperature_min_c: '最低水温(C)',
+  water_temperature_max_c: '最高水温(C)',
+  water_flow_min_l_per_min: '最小水流量(L/min)',
+  water_flow_max_l_per_min: '最大水流量(L/min)',
+  irradiance_min_w_per_m3: '最低辐照度(W/m3)',
+  irradiance_max_w_per_m3: '最高辐照度(W/m3)',
+  max_load_kg: '最大载荷(kg)',
+  frequency_min_hz: '最低频率(Hz)',
+  frequency_max_hz: '最高频率(Hz)',
+  acceleration_min_m_per_s2: '最低加速度(m/s2)',
+  acceleration_max_m_per_s2: '最高加速度(m/s2)',
+  max_peak_to_peak_displacement_mm: '最大峰峰位移(mm)',
+
+  max_length_mm: '最大长度(mm)',
+  max_width_mm: '最大宽度(mm)',
+  max_height_mm: '最大高度(mm)',
+  max_volume_m3: '最大体积(m3)',
+  other_limits: '其他限制',
+};
+
+export function getQuotationFieldLabel(fieldName: string): string {
+  return QUOTATION_FIELD_LABELS[fieldName] ?? fieldName;
+}

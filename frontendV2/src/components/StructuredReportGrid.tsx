@@ -6,7 +6,8 @@
 import React from 'react';
 import {Check, ChevronRight, Edit3, Hash, List, Loader2, Type, X} from 'lucide-react';
 import {motion} from 'motion/react';
-import {fetchTestTypes, resumeRun, toErrorMessage} from '../api';
+import {fetchCatalogTestProjects, fetchTestTypes, resumeRun, toErrorMessage, type CatalogTestProject} from '../api';
+import {getQuotationFieldLabel} from '../quotationFieldLabels';
 import type {
   ExtraStandardRequirement,
   FormRow,
@@ -53,6 +54,36 @@ type TestTypePickerState = {
   rowId: string;
   currentValue: string;
 } | null;
+
+type LegacyStructuredReportGridProps = {
+  activeStage?: FormStageSnapshot;
+  runState: RunState;
+  onUpdated: (next: RunState) => void;
+};
+
+export type DynamicQuotationResult = {
+  quote_id: string;
+  test_project_id: number | null;
+  fixed_fields: Record<string, unknown>;
+  special_fields: Record<string, unknown>;
+  base_fee: number | null;
+  unit_price: number | null;
+  pricing_mode: unknown;
+  pricing_quantity: unknown;
+  total_price: number | null;
+  selected_device_code: string | null;
+  specification_options: Array<{
+    test_project_id: number;
+    specification: string;
+    pricing_mode: string;
+  }>;
+};
+
+type DynamicStructuredReportGridProps = {
+  quotationResult: DynamicQuotationResult;
+  onUpdated: (quotation: DynamicQuotationResult) => Promise<void> | void;
+  saving?: boolean;
+};
 
 const BASE_COLUMN_DEFS: ColumnDef[] = [
   {key: 'canonical_test_type', label: '标准试验类型', type: 'select'},
@@ -152,11 +183,14 @@ const MANUAL_LABELS: Record<string, string> = {
   required_water_flow_max: '最大流量',
 };
 
-export const StructuredReportGrid: React.FC<{
-  activeStage?: FormStageSnapshot;
-  runState: RunState;
-  onUpdated: (next: RunState) => void;
-}> = ({activeStage, runState, onUpdated}) => {
+export const StructuredReportGrid: React.FC<LegacyStructuredReportGridProps | DynamicStructuredReportGridProps> = (props) => {
+  if ('quotationResult' in props) {
+    return <DynamicStructuredReportGrid quotationResult={props.quotationResult} onUpdated={props.onUpdated} saving={props.saving} />;
+  }
+  return <LegacyStructuredReportGrid {...props} />;
+};
+
+const LegacyStructuredReportGrid: React.FC<LegacyStructuredReportGridProps> = ({activeStage, runState, onUpdated}) => {
   const rows = activeStage?.items ?? [];
   const [savedDrafts, setSavedDrafts] = React.useState<Record<string, RowDrafts>>({});
   const [editingValues, setEditingValues] = React.useState<Record<string, RowDrafts>>({});
@@ -506,6 +540,414 @@ export const StructuredReportGrid: React.FC<{
     </div>
   );
 };
+
+type DynamicFieldSectionName = 'fixed_fields' | 'special_fields';
+
+type DynamicEditingField = {
+  section: DynamicFieldSectionName;
+  name: string;
+  value: string;
+} | null;
+
+type DynamicProjectSelection = {
+  testProjectId: number;
+  fixedFields: Record<string, unknown>;
+};
+
+const CATALOG_SELECTION_FIELD_NAMES = new Set(['standard_type', 'test_item', 'pricing_mode']);
+
+const DynamicStructuredReportGrid: React.FC<DynamicStructuredReportGridProps> = ({quotationResult, onUpdated, saving = false}) => {
+  const [editingField, setEditingField] = React.useState<DynamicEditingField>(null);
+  const [catalogProjects, setCatalogProjects] = React.useState<CatalogTestProject[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = React.useState(false);
+  const rawTestType = quotationResult.fixed_fields.raw_test_type;
+  const title = rawTestType == null || rawTestType === '' ? '未命名试验' : dynamicValueText(rawTestType);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetchCatalogTestProjects()
+      .then((response) => {
+        if (!cancelled) {
+          setCatalogProjects(response.items);
+          setCatalogLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCatalogProjects([]);
+          setCatalogLoaded(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    setEditingField(null);
+  }, [quotationResult.quote_id]);
+
+  function beginEditing(section: DynamicFieldSectionName, name: string, value: unknown) {
+    const editingValue = section === 'fixed_fields' && name === 'specification'
+      ? dynamicInputText(quotationResult.test_project_id)
+      : dynamicInputText(value);
+    setEditingField({section, name, value: editingValue});
+  }
+
+  async function saveEditing() {
+    if (!editingField) {
+      return;
+    }
+    const fields = quotationResult[editingField.section];
+    const previousValue = fields[editingField.name];
+    if (editingField.section === 'fixed_fields' && editingField.name === 'specification') {
+      const selectedProjectId = Number(editingField.value);
+      const option = quotationResult.specification_options.find((item) => item.test_project_id === selectedProjectId);
+      if (option) {
+        await onUpdated({
+          ...quotationResult,
+          test_project_id: option.test_project_id,
+          fixed_fields: {
+            ...quotationResult.fixed_fields,
+            specification: option.specification,
+            pricing_mode: option.pricing_mode,
+          },
+          pricing_mode: option.pricing_mode,
+        });
+      }
+      setEditingField(null);
+      return;
+    }
+    const projectSelection = selectCatalogProject(
+      editingField.name,
+      editingField.value,
+      quotationResult.fixed_fields,
+      catalogProjects,
+    );
+    if (editingField.section === 'fixed_fields' && projectSelection) {
+      await onUpdated({
+        ...quotationResult,
+        test_project_id: projectSelection.testProjectId,
+        fixed_fields: projectSelection.fixedFields,
+      });
+      setEditingField(null);
+      return;
+    }
+    const nextValue = parseDynamicInput(editingField.value, previousValue);
+    await onUpdated({
+      ...quotationResult,
+      [editingField.section]: {
+        ...fields,
+        [editingField.name]: nextValue,
+      },
+    });
+    setEditingField(null);
+  }
+
+  return (
+    <div className="mb-12">
+      <section className="glass-panel p-5">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <h4 className="truncate text-lg font-bold text-slate-800">{title}</h4>
+            <p className="mt-1 text-xs font-mono text-slate-400">Quote ID: {quotationResult.quote_id}</p>
+          </div>
+        </div>
+
+        <DynamicFieldSection
+          title="固定字段"
+          section="fixed_fields"
+          fields={quotationResult.fixed_fields}
+          editingField={editingField}
+          onBeginEditing={beginEditing}
+          onEditingValueChange={(value) => setEditingField((current) => current ? {...current, value} : current)}
+          onSaveEditing={saveEditing}
+          onCancelEditing={() => setEditingField(null)}
+          hiddenFields={new Set(['length_mm', 'width_mm', 'height_mm'])}
+          dimensionValues={{
+            length_mm: quotationResult.fixed_fields.length_mm,
+            width_mm: quotationResult.fixed_fields.width_mm,
+            height_mm: quotationResult.fixed_fields.height_mm,
+          }}
+          specificationOptions={quotationResult.specification_options}
+          selectOptions={getDynamicSelectOptions(editingField, quotationResult.fixed_fields, catalogProjects)}
+          catalogSelectionReady={catalogLoaded}
+          saving={saving}
+        />
+        <DynamicFieldSection
+          title="专有字段"
+          section="special_fields"
+          fields={quotationResult.special_fields}
+          editingField={editingField}
+          onBeginEditing={beginEditing}
+          onEditingValueChange={(value) => setEditingField((current) => current ? {...current, value} : current)}
+          onSaveEditing={saveEditing}
+          onCancelEditing={() => setEditingField(null)}
+          saving={saving}
+        />
+        <DynamicFieldSection
+          title="报价"
+          fields={{
+            base_fee: quotationResult.base_fee,
+            unit_price: quotationResult.unit_price,
+            pricing_mode: quotationResult.pricing_mode,
+            pricing_quantity: quotationResult.pricing_quantity,
+            total_price: quotationResult.total_price,
+          }}
+          currencyFields={new Set(['base_fee', 'unit_price', 'total_price'])}
+          emphasizeFields={new Set(['total_price'])}
+        />
+      </section>
+    </div>
+  );
+};
+
+function DynamicFieldSection({
+  title,
+  section,
+  fields,
+  currencyFields = new Set<string>(),
+  emphasizeFields = new Set<string>(),
+  editingField,
+  onBeginEditing,
+  onEditingValueChange,
+  onSaveEditing,
+  onCancelEditing,
+  saving = false,
+  hiddenFields = new Set<string>(),
+  dimensionValues,
+  specificationOptions = [],
+  selectOptions = [],
+  catalogSelectionReady = false,
+}: {
+  title: string;
+  section?: DynamicFieldSectionName;
+  fields: Record<string, unknown>;
+  currencyFields?: Set<string>;
+  emphasizeFields?: Set<string>;
+  editingField?: DynamicEditingField;
+  onBeginEditing?: (section: DynamicFieldSectionName, name: string, value: unknown) => void;
+  onEditingValueChange?: (value: string) => void;
+  onSaveEditing?: () => void;
+  onCancelEditing?: () => void;
+  saving?: boolean;
+  hiddenFields?: Set<string>;
+  dimensionValues?: Record<'length_mm' | 'width_mm' | 'height_mm', unknown>;
+  specificationOptions?: Array<{test_project_id: number; specification: string; pricing_mode: string}>;
+  selectOptions?: string[];
+  catalogSelectionReady?: boolean;
+}) {
+  const entries = Object.entries(fields).filter(([name]) => !hiddenFields.has(name));
+  return (
+    <section className="mb-6 last:mb-0">
+      <h5 className="mb-3 text-[11px] font-bold text-slate-400">{title}</h5>
+      {entries.length === 0 ? (
+        <div className="rounded-lg border border-slate-100 bg-slate-50/50 px-4 py-3 text-sm font-mono text-slate-400">null</div>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
+          {entries.map(([name, value], index) => {
+            const displayValue = currencyFields.has(name) ? formatDynamicCurrency(value) : dynamicValueText(value);
+            const emphasized = emphasizeFields.has(name);
+            const editing = editingField !== null && section !== undefined && editingField.section === section && editingField.name === name;
+            const catalogSelection = section === 'fixed_fields' && CATALOG_SELECTION_FIELD_NAMES.has(name);
+            return (
+              <motion.div
+                key={name}
+                initial={{opacity: 0, scale: 0.97}}
+                animate={{opacity: 1, scale: 1}}
+                transition={{delay: index * 0.01}}
+                className={`glass-panel p-4 ${displayValue === 'null' ? 'bg-slate-50/50' : 'bg-white'} ${emphasized ? 'ring-1 ring-indigo-100' : ''}`}
+              >
+                <p className="mb-2 min-h-8 break-words text-[11px] font-bold leading-tight text-slate-400">{getQuotationFieldLabel(name)}</p>
+                {editing && name === 'specification' ? (
+                  <select
+                    className="w-full rounded-lg border border-indigo-100 bg-white px-2 py-1.5 font-mono text-sm font-semibold text-indigo-900 outline-none focus:border-indigo-300"
+                    value={editingField.value}
+                    onChange={(event) => onEditingValueChange?.(event.target.value)}
+                    autoFocus
+                  >
+                    {specificationOptions.map((option) => (
+                      <option key={option.test_project_id} value={option.test_project_id}>{option.specification}</option>
+                    ))}
+                  </select>
+                ) : editing && catalogSelection ? (
+                  <select
+                    className="w-full rounded-lg border border-indigo-100 bg-white px-2 py-1.5 font-mono text-sm font-semibold text-indigo-900 outline-none focus:border-indigo-300"
+                    value={editingField.value}
+                    onChange={(event) => onEditingValueChange?.(event.target.value)}
+                    autoFocus
+                    disabled={!catalogSelectionReady || selectOptions.length === 0}
+                  >
+                    {selectOptions.length > 0 ? selectOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    )) : <option value={editingField.value}>{catalogSelectionReady ? '无可用选项' : '正在加载选项...'}</option>}
+                  </select>
+                ) : editing ? (
+                  <input
+                    className="w-full rounded-lg border border-indigo-100 bg-white px-2 py-1.5 font-mono text-sm font-semibold text-indigo-900 outline-none focus:border-indigo-300"
+                    value={editingField.value}
+                    onChange={(event) => onEditingValueChange?.(event.target.value)}
+                    autoFocus
+                  />
+                ) : (
+                  <div className={`break-words font-mono text-base font-semibold ${displayValue === 'null' ? 'text-slate-300' : emphasized ? 'text-indigo-700' : 'text-indigo-900'}`} title={displayValue}>
+                    {displayValue}
+                  </div>
+                )}
+                {name === 'specification' && dimensionValues ? (
+                  <div className="mt-3 space-y-1 border-t border-slate-100 pt-2 text-[10px] font-mono text-slate-500">
+                    {Object.entries(dimensionValues).map(([dimensionName, dimensionValue]) => (
+                      <div key={dimensionName} className="flex justify-between gap-2">
+                        <span>{getQuotationFieldLabel(dimensionName)}</span>
+                        <span>{dynamicValueText(dimensionValue)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {section ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {editing ? (
+                      <>
+                        <button type="button" className="inline-flex items-center gap-1 rounded border border-emerald-100 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:border-emerald-200 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void onSaveEditing?.()} disabled={saving || (catalogSelection && (!catalogSelectionReady || selectOptions.length === 0))}>
+                          <Check size={10} />
+                          保存
+                        </button>
+                        <button type="button" className="inline-flex items-center gap-1 rounded border border-slate-100 bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-500 hover:border-slate-200" onClick={onCancelEditing} disabled={saving}>
+                          <X size={10} />
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" className="inline-flex items-center gap-1.5 rounded border border-transparent bg-indigo-50/50 px-2 py-1 text-[10px] font-bold uppercase text-indigo-500 transition-colors hover:border-indigo-100 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => onBeginEditing?.(section, name, value)} disabled={saving}>
+                        <Edit3 size={10} />
+                        编辑
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function dynamicValueText(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'null';
+  }
+  if (typeof value === 'string') {
+    return value || '""';
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function formatDynamicCurrency(value: unknown): string {
+  return typeof value === 'number'
+    ? `¥${value.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+    : dynamicValueText(value);
+}
+
+function getDynamicSelectOptions(
+  editingField: DynamicEditingField,
+  fixedFields: Record<string, unknown>,
+  catalogProjects: CatalogTestProject[],
+): string[] {
+  if (!editingField || editingField.section !== 'fixed_fields') {
+    return [];
+  }
+  if (editingField.name === 'standard_type') {
+    return uniqueCatalogValues(catalogProjects.map((project) => project.standard_type));
+  }
+  if (editingField.name === 'test_item') {
+    const standardType = dynamicInputText(fixedFields.standard_type);
+    return uniqueCatalogValues(
+      catalogProjects
+        .filter((project) => project.standard_type === standardType)
+        .map((project) => project.test_item),
+    );
+  }
+  if (editingField.name === 'pricing_mode') {
+    const standardType = dynamicInputText(fixedFields.standard_type);
+    const testItem = dynamicInputText(fixedFields.test_item);
+    return uniqueCatalogValues(
+      catalogProjects
+        .filter((project) => project.standard_type === standardType && project.test_item === testItem)
+        .map((project) => project.pricing_mode),
+    );
+  }
+  return [];
+}
+
+function selectCatalogProject(
+  fieldName: string,
+  selectedValue: string,
+  fixedFields: Record<string, unknown>,
+  catalogProjects: CatalogTestProject[],
+): DynamicProjectSelection | null {
+  if (fieldName !== 'standard_type' && fieldName !== 'test_item' && fieldName !== 'pricing_mode') {
+    return null;
+  }
+  const standardType = fieldName === 'standard_type'
+    ? selectedValue
+    : dynamicInputText(fixedFields.standard_type);
+  const testItem = fieldName === 'test_item'
+    ? selectedValue
+    : dynamicInputText(fixedFields.test_item);
+  const pricingMode = fieldName === 'pricing_mode'
+    ? selectedValue
+    : dynamicInputText(fixedFields.pricing_mode);
+  const projectsForStandardType = catalogProjects.filter((project) => project.standard_type === standardType);
+  const projectsForTestItem = projectsForStandardType.filter((project) => project.test_item === testItem);
+  const candidates = fieldName === 'standard_type'
+    ? (projectsForTestItem.length > 0 ? projectsForTestItem : projectsForStandardType)
+    : fieldName === 'pricing_mode'
+      ? projectsForTestItem.filter((project) => project.pricing_mode === pricingMode)
+      : projectsForTestItem;
+  const currentSpecification = dynamicInputText(fixedFields.specification);
+  const selectedProject = candidates.find((project) => project.max_specification === currentSpecification) ?? candidates[0];
+  if (!selectedProject) {
+    return null;
+  }
+  return {
+    testProjectId: selectedProject.id,
+    fixedFields: {
+      ...fixedFields,
+      standard_type: selectedProject.standard_type,
+      test_item: selectedProject.test_item,
+      specification: selectedProject.max_specification,
+      pricing_mode: selectedProject.pricing_mode,
+    },
+  };
+}
+
+function uniqueCatalogValues(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function dynamicInputText(value: unknown): string {
+  return value == null ? '' : String(value);
+}
+
+function parseDynamicInput(value: string, previousValue: unknown): unknown {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return null;
+  }
+  if (typeof previousValue === 'number') {
+    const numberValue = Number(trimmedValue);
+    return Number.isFinite(numberValue) ? numberValue : previousValue;
+  }
+  if (previousValue === null && /^[-+]?\d+(?:\.\d+)?$/.test(trimmedValue)) {
+    return Number(trimmedValue);
+  }
+  return value;
+}
 
 function isEditableField(key: DisplayFieldKey): key is EditableFieldKey {
   return key in EDITABLE_FIELD_DEFS;
